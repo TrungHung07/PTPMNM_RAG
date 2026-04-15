@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chatbox-local-rag"
+version = "0.1.0"
+description = "Local-first knowledge assistant with parallel RAG and GraphRAG"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.8,<3.0",
+  "fastapi>=0.115,<1.0",
+  "typer>=0.12,<1.0",
+  "pypdf>=5.0,<6.0",
+  "python-docx>=1.1,<2.0",
+  "httpx>=0.28,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "pytest-benchmark>=5.1,<6.0",
+  "ruff>=0.7,<1.0",
+]
+
+[project.scripts]
+chatbox-import = "chatbox.app.cli.import_cmd:app"
+chatbox-query = "chatbox.app.cli.query_cmd:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chatbox"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.chatbox.sla]
+parse_chunk_p95_seconds = 45.0
+retrieval_p95_seconds = 2.5
+full_response_p95_seconds = 8.0
