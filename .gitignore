@@ -40,4 +40,9 @@ Thumbs.db
 *.swp
 
 .github/
-.specify/
+.specify/src/chatbox/rag/
+src/chatbox/graphrag/
+src/chatbox/orchestration/
+src/chatbox/observability/
+src/chatbox/app/api/
+src/chatbox/app/cli/
