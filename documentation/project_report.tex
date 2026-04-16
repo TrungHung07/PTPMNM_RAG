@@ -1,0 +1,31 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+
+\title{PDF/DOCX Loader and Chunker}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Giới thiệu}
+
+Dự án tập trung vào hai chức năng chính: đọc nội dung từ tệp PDF/DOCX
+và chia văn bản thành các chunk có độ dài cố định để phục vụ các bài toán RAG.
+
+\section{Công nghệ}
+
+\begin{itemize}
+  \item \textbf{pdfplumber}: backend đọc PDF chính.
+  \item \textbf{pypdf}: backend đọc PDF thay thế.
+  \item \textbf{python-docx}: đọc nội dung từ tệp DOCX.
+\end{itemize}
+
+\section{Chunking}
+
+Sau khi trích xuất văn bản, nội dung được chuẩn hoá xuống dòng và chia
+theo cửa sổ ký tự cố định với phần overlap giữa các chunk liên tiếp để
+giảm mất ngữ cảnh.
+
+\end{document}
