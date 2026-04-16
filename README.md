@@ -25,12 +25,12 @@ Repo có sẵn các file mẫu ở thư mục gốc:
 
 Import một tài liệu:
 ```bash
-python -m chatbox.app.cli.import_cmd run --file-path sample.pdf --file-type pdf
+chatbox-import sample.pdf pdf
 ```
 
 Query (hybrid + streaming):
 ```bash
-python -m chatbox.app.cli.query_cmd run "Summarize key points" --mode hybrid --stream true
+chatbox-query "Summarize key points" --mode hybrid --stream true
 ```
 
 Lưu ý: state local được lưu dưới `.chatbox/` và đã được **git-ignore**.
