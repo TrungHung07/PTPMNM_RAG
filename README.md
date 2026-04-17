@@ -1,55 +1,42 @@
-# ChatBox Local RAG
+# Project LLMs-Rag-Agent
 
-Trợ lý tri thức **local-first** kết hợp **Parallel RAG + GraphRAG**, tối ưu cho việc demo/tái lập kết quả trên máy cá nhân và phát triển nhanh.
+Project tối giản để đọc văn bản từ file PDF/DOCX và chia nội dung thành các chunk có độ dài cố định để phục vụ các thử nghiệm RAG.
 
-## Thành phần chính
-- **Ingestion**: parse PDF/DOCX → chuẩn hoá → chunk.
-- **Retrieval**: truy hồi vector + truy hồi graph, chạy song song và hợp nhất kết quả.
-- **Orchestration**: adapter nhà cung cấp (ví dụ Ollama/vLLM) + các pattern streaming/fallback.
-- **Storage**: lưu metadata bằng SQLite cho workflow local-first.
+## Cài đặt
 
-## Yêu cầu
-- Python **3.11+**
-
-## Cài đặt (dev)
 ```bash
-python -m pip install --upgrade pip
-pip install -e .[dev]
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-## Demo nhanh (CLI)
-Repo có sẵn các file mẫu ở thư mục gốc:
-- `sample.pdf`
+## Cách chạy
+
+Ví dụ với file PDF:
+
+```bash
+python app.py data/sample.pdf --chunk-size 1000 --overlap 200
+```
+
+Ví dụ với file DOCX:
+
+```bash
+python app.py sample.docx --chunk-size 800 --overlap 100 --output chunks.json
+```
+
+## Tham số CLI
+
+- `file`: đường dẫn tới file `.pdf` hoặc `.docx`.
+- `--chunk-size`: số ký tự tối đa của mỗi chunk, mặc định `1000`.
+- `--overlap`: số ký tự overlap giữa hai chunk liên tiếp, mặc định `200`.
+- `--pdf-backend`: chọn backend đọc PDF là `pdfplumber` hoặc `pypdf`.
+- `--output`: đường dẫn file output. Đuôi `.json` sẽ lưu JSON, còn lại lưu text.
+
+## Sample files
+
+Repo giữ lại các file mẫu sau:
+
+- `data/sample.pdf`
 - `sample.docx`
 - `sample2.docx`
-
-Import một tài liệu:
-```bash
-chatbox-import sample.pdf pdf
-```
-
-Query (hybrid + streaming):
-```bash
-chatbox-query "Summarize key points" --mode hybrid --stream true
-```
-
-Lưu ý: state local được lưu dưới `.chatbox/` và đã được **git-ignore**.
-
-## API
-Xem mô tả API tại `docs/api/chatbox-local-api.md`.
-
-## Phát triển
-Lint:
-```bash
-python -m ruff check src tests
-```
-
-Test:
-```bash
-python -m pytest -q
-```
-
-## Tài liệu
-- Runbook: `docs/runbook/local-first-chatbox.md`
-- Roadmap: `docs/roadmap/future-feature-groups.md`
-- Specs: `specs/001-local-rag-chatbox/`
+- `sample3.docx`

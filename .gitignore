@@ -28,6 +28,10 @@ coverage/
 # Local app state
 .chatbox/
 
+# Uploaded files (runtime data)
+data/
+!data/.gitkeep
+
 # Office temp files
 ~$*.docx
 
@@ -39,10 +43,6 @@ Thumbs.db
 *.tmp
 *.swp
 
-.github/
-.specify/src/chatbox/rag/
-src/chatbox/graphrag/
-src/chatbox/orchestration/
-src/chatbox/observability/
-src/chatbox/app/api/
-src/chatbox/app/cli/
+.benchmarks/
+.ruff_cache/
+chunks.json
