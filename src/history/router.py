@@ -3,7 +3,7 @@
 # Người phụ trách: [Tên thành viên phụ trách phần này]
 #
 # Chức năng:
-#   - Lưu trữ lịch sử hội thoại theo từng file (session)
+#   - Lưu trữ lịch sử hội thoại theo từng file (session) vào PostgreSQL
 #   - API lấy lịch sử để hiển thị trên sidebar
 # ============================================================
 
@@ -11,12 +11,17 @@ from fastapi import APIRouter
 from typing import List
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/history", tags=["Chat History"])
+from src.database import (
+    db_create_session,
+    db_get_all_sessions,
+    db_delete_session,
+    db_delete_all_sessions,
+    db_append_message,
+    db_get_messages,
+    db_get_recent_messages,
+)
 
-# ── In-memory store ──────────────────────────────────────────
-# Key   : file_id (str)
-# Value : { "filename": str, "messages": [{question, answer}] }
-CHAT_HISTORY: dict[str, dict] = {}
+router = APIRouter(prefix="/history", tags=["Chat History"])
 
 
 # ── Pydantic models ──────────────────────────────────────────
@@ -37,57 +42,64 @@ class HistoryResponse(BaseModel):
     history: List[ChatMessage]
 
 
-# ── Helper functions (dùng nội bộ, gọi từ app.py) ────────────
-def init_history(file_id: str, filename: str) -> None:
-    """Khởi tạo lịch sử rỗng cho một file mới upload."""
-    CHAT_HISTORY[file_id] = {"filename": filename, "messages": []}
+# ── Helper functions (gọi từ app.py) ─────────────────────────
+async def init_history(file_id: str, filename: str) -> None:
+    """Tạo session mới trong DB khi upload file."""
+    await db_create_session(file_id, filename)
 
 
-def append_message(file_id: str, question: str, answer: str) -> None:
-    """Lưu một cặp hỏi-đáp vào lịch sử của file."""
-    if file_id not in CHAT_HISTORY:
-        CHAT_HISTORY[file_id] = {"filename": "unknown", "messages": []}
-    CHAT_HISTORY[file_id]["messages"].append({"question": question, "answer": answer})
+async def append_message(file_id: str, question: str, answer: str) -> None:
+    """Lưu một cặp hỏi-đáp vào DB."""
+    await db_append_message(file_id, question, answer)
+
+
+async def get_recent_messages(file_id: str, limit: int = 5) -> list:
+    """Lấy N tin nhắn gần nhất - dùng cho Conversational RAG."""
+    return await db_get_recent_messages(file_id, limit)
 
 
 # ── API endpoints ─────────────────────────────────────────────
 @router.get("", response_model=List[SessionSummary])
 async def get_all_sessions():
     """Trả về danh sách tóm tắt tất cả các phiên chat (dùng cho sidebar)."""
+    rows = await db_get_all_sessions()
     return [
         {
-            "file_id": file_id,
-            "filename": session["filename"],
-            "message_count": len(session["messages"]),
+            "file_id": str(r["file_id"]),
+            "filename": r["filename"],
+            "message_count": r["message_count"],
         }
-        for file_id, session in CHAT_HISTORY.items()
+        for r in rows
     ]
 
 
 @router.get("/{file_id}", response_model=HistoryResponse)
 async def get_history(file_id: str):
     """Trả về toàn bộ lịch sử hội thoại của một file."""
-    if file_id not in CHAT_HISTORY:
+    sessions = await db_get_all_sessions()
+    session = next((s for s in sessions if str(s["file_id"]) == file_id), None)
+    if not session:
         return {"file_id": file_id, "filename": "", "history": []}
-    session = CHAT_HISTORY[file_id]
+
+    messages = await db_get_messages(file_id)
     return {
         "file_id": file_id,
         "filename": session["filename"],
-        "history": session["messages"],
+        "history": messages,
     }
 
 
 @router.delete("", summary="Xóa toàn bộ lịch sử chat")
 async def clear_all_history():
     """Xóa toàn bộ lịch sử hội thoại của tất cả các file."""
-    CHAT_HISTORY.clear()
+    await db_delete_all_sessions()
     return {"message": "Đã xóa toàn bộ lịch sử chat"}
 
 
 @router.delete("/{file_id}", summary="Xóa lịch sử chat của một file")
 async def clear_history(file_id: str):
     """Xóa lịch sử hội thoại của một file cụ thể."""
-    if file_id not in CHAT_HISTORY:
+    deleted = await db_delete_session(file_id)
+    if not deleted:
         return {"error": "file_id không tồn tại"}
-    del CHAT_HISTORY[file_id]
     return {"message": f"Đã xóa lịch sử chat của file {file_id}"}

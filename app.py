@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File
 from pathlib import Path
 import shutil
@@ -8,9 +9,18 @@ from src.parsers.pdf_parser import extract_text_pdf
 from src.parsers.docx_parser import extract_text_docx
 from src.rag.pipeline import build_vectorstore_from_text, ask_question
 from src.history.router import router as history_router
-from src.history.router import init_history, append_message, CHAT_HISTORY
+from src.history.router import init_history, append_message, get_recent_messages
+from src.database import get_pool, close_pool
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await get_pool()
+    yield
+    await close_pool()
+
+
+app = FastAPI(lifespan=lifespan)
 app.include_router(history_router)
 
 VECTOR_DB = {}
@@ -51,7 +61,7 @@ async def upload(file: UploadFile = File(...)):
     vectorstore = build_vectorstore_from_text(text)
 
     VECTOR_DB[file_id] = vectorstore
-    init_history(file_id, file.filename)
+    await init_history(file_id, file.filename)
 
     return {
         "message": "upload thành công",
@@ -66,10 +76,10 @@ async def ask(req: AskRequest):
 
     vectorstore = VECTOR_DB[req.file_id]
 
-    chat_history = CHAT_HISTORY.get(req.file_id, {}).get("messages", [])
+    chat_history = await get_recent_messages(req.file_id)
     answer = ask_question(vectorstore, req.question, chat_history=chat_history)
 
-    append_message(req.file_id, req.question, answer)
+    await append_message(req.file_id, req.question, answer)
 
     return {
         "question": req.question,
@@ -91,4 +101,3 @@ async def clear_vectorstore(file_id: str):
         return {"error": "file_id không tồn tại"}
     del VECTOR_DB[file_id]
     return {"message": f"Đã xóa tài liệu của file {file_id}"}
-
