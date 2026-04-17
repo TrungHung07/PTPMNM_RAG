@@ -1,30 +1,28 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File
 from pathlib import Path
 import shutil
 import uuid
 from pydantic import BaseModel
 
-from src.chunking.text_chunker import chunk_text
 from src.parsers.pdf_parser import extract_text_pdf
 from src.parsers.docx_parser import extract_text_docx
-
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-from langchain_community.llms import Ollama
-
 from src.rag.pipeline import build_vectorstore_from_text, ask_question
+from src.history.router import router as history_router
+from src.history.router import init_history, append_message, CHAT_HISTORY
 
 app = FastAPI()
+app.include_router(history_router)
 
 VECTOR_DB = {}
+
 
 class AskRequest(BaseModel):
     file_id: str
     question: str
-    
+
+
 # =========================
-# LOAD FILE (reuse code bạn)
+# LOAD FILE
 # =========================
 def load_text(file_path: Path) -> str:
     if file_path.suffix == ".pdf":
@@ -35,6 +33,7 @@ def load_text(file_path: Path) -> str:
         raise ValueError("Unsupported file")
 
 
+# =========================
 # API
 # =========================
 
@@ -49,10 +48,10 @@ async def upload(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     text = load_text(file_path)
-
     vectorstore = build_vectorstore_from_text(text)
 
     VECTOR_DB[file_id] = vectorstore
+    init_history(file_id, file.filename)
 
     return {
         "message": "upload thành công",
@@ -62,15 +61,34 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-        if req.file_id not in VECTOR_DB:
-            return {"error": "file_id không tồn tại"}
+    if req.file_id not in VECTOR_DB:
+        return {"error": "file_id không tồn tại"}
 
-        vectorstore = VECTOR_DB[req.file_id]
+    vectorstore = VECTOR_DB[req.file_id]
 
-        answer = ask_question(vectorstore, req.question)
+    chat_history = CHAT_HISTORY.get(req.file_id, {}).get("messages", [])
+    answer = ask_question(vectorstore, req.question, chat_history=chat_history)
 
-        return {
-            "question": req.question,
-            "answer": answer
-        }
+    append_message(req.file_id, req.question, answer)
+
+    return {
+        "question": req.question,
+        "answer": answer
+    }
+
+
+@app.delete("/vectorstore", tags=["Vector Store"], summary="Xóa toàn bộ tài liệu đã upload")
+async def clear_all_vectorstore():
+    """Xóa toàn bộ vector store của tất cả các file."""
+    VECTOR_DB.clear()
+    return {"message": "Đã xóa toàn bộ tài liệu"}
+
+
+@app.delete("/vectorstore/{file_id}", tags=["Vector Store"], summary="Xóa tài liệu của một file")
+async def clear_vectorstore(file_id: str):
+    """Xóa vector store của một file cụ thể."""
+    if file_id not in VECTOR_DB:
+        return {"error": "file_id không tồn tại"}
+    del VECTOR_DB[file_id]
+    return {"message": f"Đã xóa tài liệu của file {file_id}"}
 
