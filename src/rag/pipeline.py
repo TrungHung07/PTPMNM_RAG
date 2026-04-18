@@ -8,6 +8,7 @@ Hỗ trợ 2 chế độ retrieval:
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Literal
 
@@ -18,13 +19,24 @@ from src.rag.embedding import get_embedding
 from src.rag.vectorstore import create_vectorstore
 from src.rag.retriever import build_vector_retriever, build_hybrid_retriever
 from src.rag.llm import get_llm
-from src.models import RAGIndex, CitationSource, AskResponse, SearchResult
+from src.models import RAGIndex, AskResponse, CitationSource, SearchResult
 
 # Số lượng tin nhắn gần nhất đưa vào ngữ cảnh hội thoại
 HISTORY_WINDOW = 5
 
 # Số chunk mỗi retriever trả về trước khi fusion (EnsembleRetriever dùng giá trị này)
 RETRIEVER_TOP_K = 4
+
+# Chỉ giữ chunk có độ gần nghĩa (vector) >= ngưỡng — tránh citation khi câu hỏi lệch chủ đề.
+# Tắt: RAG_VECTOR_RELEVANCE_FILTER=0
+RAG_VECTOR_RELEVANCE_FILTER = os.getenv("RAG_VECTOR_RELEVANCE_FILTER", "1") not in (
+    "0",
+    "false",
+    "False",
+)
+RAG_MIN_VECTOR_RELEVANCE = float(os.getenv("RAG_MIN_VECTOR_RELEVANCE", "0.35"))
+
+_NO_INFO_PHRASE = "Không tìm thấy thông tin trong tài liệu."
 
 
 # ─────────────────────────────────────────────
@@ -98,6 +110,26 @@ def build_vectorstore_from_text(text: str):
     return build_index([doc]).vectorstore
 
 
+def merge_rag_indices(indices: list[RAGIndex]) -> RAGIndex:
+    """
+    Gộp nhiều RAGIndex (từng file trong session) thành một index để hỏi đáp một lần.
+
+    Ghép list chunk rồi embed lại toàn bộ vào một FAISS — không mutate index gốc trong
+    INDEX_DB. Chi phí tăng khi danh sách file dài / nhiều chunk; có thể tối ưu sau bằng
+    merge FAISS inplace + cache.
+    """
+    if not indices:
+        raise ValueError("merge_rag_indices: indices rỗng")
+    if len(indices) == 1:
+        return indices[0]
+    chunks: list[Document] = []
+    for ri in indices:
+        chunks.extend(ri.chunks)
+    embedding = get_embedding()
+    vectorstore = create_vectorstore(chunks, embedding)
+    return RAGIndex(vectorstore=vectorstore, chunks=chunks)
+
+
 # ─────────────────────────────────────────────
 # Internal Helpers
 # ─────────────────────────────────────────────
@@ -119,6 +151,44 @@ def _format_chat_history(chat_history: list) -> str:
         lines.append(f"Human: {msg['question']}")
         lines.append(f"AI: {msg['answer']}")
     return "\n".join(lines)
+
+
+def _filter_docs_by_vector_relevance(
+    vectorstore,
+    question: str,
+    docs: list[Document],
+    *,
+    min_relevance: float,
+) -> list[Document]:
+    """
+    Giữ chunk có relevance (cosine từ embedding) đủ cao; bỏ hết nếu không chunk nào đạt —
+    tránh đưa chunk “đứng đầu FAISS” dù không thật liên quan (vd. hỏi Hacker mà chỉ có text cà phê).
+    """
+    if not docs or min_relevance <= 0 or not RAG_VECTOR_RELEVANCE_FILTER:
+        return docs
+    try:
+        pool = vectorstore.similarity_search_with_relevance_scores(
+            question, k=max(48, len(docs) * 8)
+        )
+    except Exception:
+        return docs
+
+    rel: dict[str, float] = {}
+    for d, score in pool:
+        rel[d.page_content] = max(rel.get(d.page_content, 0.0), float(score))
+
+    kept = [d for d in docs if rel.get(d.page_content, 0.0) >= min_relevance]
+    return kept
+
+
+def _citations_match_answer(answer: str, citations: list[CitationSource]) -> list[CitationSource]:
+    """Nếu model báo không có trong tài liệu thì không trả citation lệch từ retrieval."""
+    if not citations:
+        return citations
+    text = answer or ""
+    if _NO_INFO_PHRASE in text or "Không tìm thấy thông tin trong tài liệu" in text:
+        return []
+    return citations
 
 
 def _build_citation_list(docs: list[Document]) -> list[CitationSource]:
@@ -161,8 +231,10 @@ Bạn là AI chỉ được phép trả lời dựa trên thông tin trong tài 
 
 QUY TẮC:
 - CHỈ sử dụng thông tin có trong Context.
-- KHÔNG được suy đoán, KHÔNG thêm kiến thức bên ngoài.
-- Nếu câu hỏi là follow-up (ví dụ: "giải thích thêm", "ý đó là gì"), hãy dùng Lịch sử hội thoại để hiểu ngữ cảnh.
+- KHÔNG được suy đoán, KHÔNG được dùng kiến thức phổ thông / Wikipedia / định nghĩa có sẵn nếu không có trong Context.
+- Nếu Context không chứa thông tin để trả lời trực tiếp câu hỏi, CHỈ trả lời đúng một câu:
+  "Không tìm thấy thông tin trong tài liệu." — không giải thích thêm.
+- Nếu câu hỏi là follow-up (ví dụ: "giải thích thêm", "ý đó là gì"), hãy dùng Lịch sử hội thoại để hiểu ngữ cảnh (vẫn chỉ được dùng nội dung có trong Context cho phần trả lời).
 - Nếu không tìm thấy câu trả lời trong Context, hãy trả lời:
   "Không tìm thấy thông tin trong tài liệu."
 
@@ -215,8 +287,23 @@ def run_rag(
     else:
         retriever = build_vector_retriever(index.vectorstore, k=RETRIEVER_TOP_K)
 
-    # ── Retrieve docs (cũng chính là nguồn citation) ─────────────────────────
+    # ── Retrieve docs (sau đó lọc theo relevance để khớp citation ↔ câu hỏi) ──
     docs = retriever.invoke(question)
+    docs = _filter_docs_by_vector_relevance(
+        index.vectorstore,
+        question,
+        docs,
+        min_relevance=RAG_MIN_VECTOR_RELEVANCE,
+    )
+
+    # Không gọi LLM khi không có chunk đạt ngưỡng — tránh model dùng kiến thức có sẵn
+    if not docs:
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        return SearchResult(
+            answer=_NO_INFO_PHRASE,
+            citations=[],
+            latency_ms=round(latency_ms, 2),
+        )
 
     # ── Build prompt và gọi LLM ───────────────────────────────────────────────
     context = "\n\n".join(doc.page_content for doc in docs)
@@ -227,11 +314,14 @@ def run_rag(
     llm = get_llm()
     answer = llm.invoke(prompt)
 
+    citations = _build_citation_list(docs)
+    citations = _citations_match_answer(answer, citations)
+
     latency_ms = (time.perf_counter() - t_start) * 1000
 
     return SearchResult(
         answer=answer,
-        citations=_build_citation_list(docs),
+        citations=citations,
         latency_ms=round(latency_ms, 2),
     )
 
@@ -300,6 +390,7 @@ __all__ = [
     "build_index",
     "build_vectorstore_from_documents",
     "build_vectorstore_from_text",
+    "merge_rag_indices",
     "ask_question",
     "run_rag",
     "compare_search_modes",

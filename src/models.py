@@ -16,7 +16,7 @@ from typing import Any, Literal
 from dataclasses import dataclass, field
 
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ─────────────────────────────────────────────
@@ -49,18 +49,18 @@ class RAGIndex:
 
 class AskRequest(BaseModel):
     """
-    Request body cho endpoint POST /ask.
+    Request body cho endpoint POST /ask và POST /compare.
 
     Attributes:
-        file_id: ID của tài liệu đã upload (trả về từ POST /upload).
-        question: Câu hỏi cần hỏi về tài liệu.
-        search_mode: Chiến lược tìm kiếm:
-                     - "hybrid" (mặc định): kết hợp BM25 + vector search
-                     - "vector": chỉ dùng semantic search (FAISS)
-        bm25_weight: Trọng số cho BM25 khi dùng hybrid mode, [0.0, 1.0].
-                     Vector weight = 1 - bm25_weight. Mặc định 0.5 (chia đều).
+        session_id: Phiên upload (trả về từ POST /upload).
+        file_ids: Danh sách file trong phiên cần truy xuất — 1 id = một file,
+                  nhiều id = gộp context retrieval trên các file đó (theo thứ tự).
+        question: Câu hỏi.
+        search_mode: Chiến lược tìm kiếm (/ask): "hybrid" hoặc "vector".
+        bm25_weight: Trọng số BM25 trong hybrid mode [0.0, 1.0].
     """
-    file_id: str
+    session_id: str
+    file_ids: list[str] = Field(..., min_length=1)
     question: str
     search_mode: Literal["vector", "hybrid"] = Field(
         default="hybrid",
@@ -72,6 +72,14 @@ class AskRequest(BaseModel):
         le=1.0,
         description="Trọng số BM25 trong hybrid mode [0.0, 1.0]. Vector weight = 1 - giá trị này."
     )
+
+    @field_validator("file_ids", mode="after")
+    @classmethod
+    def normalize_file_ids(cls, v: list[str]) -> list[str]:
+        cleaned = [x.strip() for x in v if x.strip()]
+        if not cleaned:
+            raise ValueError("file_ids phải có ít nhất một id hợp lệ")
+        return list(dict.fromkeys(cleaned))
 
 
 class CitationSource(BaseModel):

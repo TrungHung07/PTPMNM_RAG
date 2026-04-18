@@ -12,7 +12,6 @@ from typing import List
 from pydantic import BaseModel
 
 from src.database import (
-    db_create_session,
     db_get_all_sessions,
     db_delete_session,
     db_delete_all_sessions,
@@ -31,7 +30,7 @@ class ChatMessage(BaseModel):
 
 
 class SessionSummary(BaseModel):
-    file_id: str
+    file_id: str  # session UUID (giữ tên field cho client cũ)
     filename: str
     message_count: int
 
@@ -43,19 +42,14 @@ class HistoryResponse(BaseModel):
 
 
 # ── Helper functions (gọi từ app.py) ─────────────────────────
-async def init_history(file_id: str, filename: str) -> None:
-    """Tạo session mới trong DB khi upload file."""
-    await db_create_session(file_id, filename)
+async def append_message(session_id: str, question: str, answer: str) -> None:
+    """Lưu một cặp hỏi-đáp vào DB (theo phiên chat)."""
+    await db_append_message(session_id, question, answer)
 
 
-async def append_message(file_id: str, question: str, answer: str) -> None:
-    """Lưu một cặp hỏi-đáp vào DB."""
-    await db_append_message(file_id, question, answer)
-
-
-async def get_recent_messages(file_id: str, limit: int = 5) -> list:
+async def get_recent_messages(session_id: str, limit: int = 5) -> list:
     """Lấy N tin nhắn gần nhất - dùng cho Conversational RAG."""
-    return await db_get_recent_messages(file_id, limit)
+    return await db_get_recent_messages(session_id, limit)
 
 
 # ── API endpoints ─────────────────────────────────────────────
@@ -65,8 +59,8 @@ async def get_all_sessions():
     rows = await db_get_all_sessions()
     return [
         {
-            "file_id": str(r["file_id"]),
-            "filename": r["filename"],
+            "file_id": str(r["session_id"]),
+            "filename": r["filename"] or "",
             "message_count": r["message_count"],
         }
         for r in rows
@@ -77,7 +71,7 @@ async def get_all_sessions():
 async def get_history(file_id: str):
     """Trả về toàn bộ lịch sử hội thoại của một file."""
     sessions = await db_get_all_sessions()
-    session = next((s for s in sessions if str(s["file_id"]) == file_id), None)
+    session = next((s for s in sessions if str(s["session_id"]) == file_id), None)
     if not session:
         return {"file_id": file_id, "filename": "", "history": []}
 
