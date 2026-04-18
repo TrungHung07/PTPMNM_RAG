@@ -14,14 +14,38 @@ from __future__ import annotations
 
 from typing import Any, Literal
 from dataclasses import dataclass, field
+import uuid
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
 
 
 # ─────────────────────────────────────────────
 # RAG Core Types (dùng nội bộ trong pipeline)
 # ─────────────────────────────────────────────
+
+
+@dataclass
+class RAGChunk:
+    """
+    [Deprecated] Model cũ cho pgvector.
+
+    Project hiện đang dùng FAISS in-memory nên không cần schema này.
+    Giữ lại để tránh break import nếu còn chỗ nào tham chiếu; sẽ xóa hẳn sau.
+    """
+    id: uuid.UUID
+    session_id: uuid.UUID
+    file_id: uuid.UUID
+    content: str
+    metadata: dict[str, Any]
+    embedding: list[float]
+    created_at: datetime
+
+
+
+
+
 
 @dataclass
 class RAGIndex:
@@ -124,10 +148,22 @@ class SearchResult(BaseModel):
         answer: Câu trả lời AI sinh ra.
         citations: Danh sách nguồn trích dẫn.
         latency_ms: Thời gian xử lý tổng cộng tính bằng millisecond.
+        retrieval_ms: Thời gian retrieval (ms).
+        rerank_ms: Thời gian re-ranking (ms) — 0 hoặc None nếu tắt.
+        llm_ms: Thời gian gọi LLM (ms).
+        rerank_enabled: Có bật rerank trong request này hay không.
+        retrieve_candidates: Số candidate retrieve ban đầu.
+        context_top_k: Số chunk cuối cùng đưa vào LLM context.
     """
     answer: str
     citations: list[CitationSource]
     latency_ms: float = Field(description="Thời gian xử lý (ms)")
+    retrieval_ms: float | None = Field(default=None, description="Thời gian retrieval (ms)")
+    rerank_ms: float | None = Field(default=None, description="Thời gian rerank (ms)")
+    llm_ms: float | None = Field(default=None, description="Thời gian gọi LLM (ms)")
+    rerank_enabled: bool | None = Field(default=None, description="Có bật rerank hay không")
+    retrieve_candidates: int | None = Field(default=None, description="Số candidate retrieve ban đầu")
+    context_top_k: int | None = Field(default=None, description="Số chunk cuối cùng đưa vào LLM")
 
 
 class CompareResponse(BaseModel):

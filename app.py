@@ -8,8 +8,18 @@ Routes:
   DELETE /vectorstore       — Xóa toàn bộ index trong memory
   DELETE /vectorstore/{session_id}/{file_id} — Xóa index một file trong phiên
 """
+try:
+    # Load biến môi trường từ file .env khi chạy local (py app.py)
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    # Nếu không có python-dotenv hoặc không cần .env, bỏ qua
+    pass
+
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from langchain_core.documents.base import Document
 from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -17,7 +27,7 @@ from pathlib import Path
 import shutil
 import uuid
 from langchain_core.documents import Document
-
+from datetime import datetime
 from src.parsers.pdf_parser import extract_documents_pdf
 from src.parsers.docx_parser import extract_documents_docx
 from src.rag.pipeline import (
@@ -30,7 +40,6 @@ from src.history.router import router as history_router
 from src.history.router import append_message, get_recent_messages
 from src.database import get_pool, close_pool, db_insert_session, db_insert_document
 from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -128,11 +137,17 @@ async def upload(files: List[UploadFile] = File(...)):
         file_id = str(uuid.uuid4())
         file_path = Path(f"data/{file_id}_{file.filename}")
         file_path.parent.mkdir(exist_ok=True)
+
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+            
         documents = load_documents(file_path)
         index = build_index(documents)
-        INDEX_DB[session_id][file_id] = index
+
+        # print("Đây là chunk", index.chunks)
+        # print("Đây là vector", index.vectorstore)
+
+        
         suffix = file_path.suffix.lower().lstrip(".") or "unknown"
         await db_insert_document(
             file_id,
@@ -140,6 +155,9 @@ async def upload(files: List[UploadFile] = File(...)):
             file.filename or "unnamed",
             suffix,
         )
+
+        # Lưu FAISS index trong memory theo session/file
+        INDEX_DB[session_id][file_id] = index
         uploaded.append(
             {
                 "file_id": file_id,
@@ -176,6 +194,7 @@ async def ask(req: AskRequest):
             citations=[],
             search_mode=req.search_mode,
         )
+
 
     index, err = _merged_index_for_files(req.session_id, req.file_ids)
     if err:

@@ -9,6 +9,7 @@ Hỗ trợ 2 chế độ retrieval:
 from __future__ import annotations
 
 import os
+import logging
 import time
 from typing import Literal
 
@@ -19,6 +20,7 @@ from src.rag.embedding import get_embedding
 from src.rag.vectorstore import create_vectorstore
 from src.rag.retriever import build_vector_retriever, build_hybrid_retriever
 from src.rag.llm import get_llm
+from src.rag.rerank import rerank_documents
 from src.models import RAGIndex, AskResponse, CitationSource, SearchResult
 
 # Số lượng tin nhắn gần nhất đưa vào ngữ cảnh hội thoại
@@ -27,14 +29,8 @@ HISTORY_WINDOW = 5
 # Số chunk mỗi retriever trả về trước khi fusion (EnsembleRetriever dùng giá trị này)
 RETRIEVER_TOP_K = 4
 
-# Chỉ giữ chunk có độ gần nghĩa (vector) >= ngưỡng — tránh citation khi câu hỏi lệch chủ đề.
-# Tắt: RAG_VECTOR_RELEVANCE_FILTER=0
-RAG_VECTOR_RELEVANCE_FILTER = os.getenv("RAG_VECTOR_RELEVANCE_FILTER", "1") not in (
-    "0",
-    "false",
-    "False",
-)
-RAG_MIN_VECTOR_RELEVANCE = float(os.getenv("RAG_MIN_VECTOR_RELEVANCE", "0.35"))
+
+_logger = logging.getLogger("uvicorn.error")
 
 _NO_INFO_PHRASE = "Không tìm thấy thông tin trong tài liệu."
 
@@ -153,32 +149,6 @@ def _format_chat_history(chat_history: list) -> str:
     return "\n".join(lines)
 
 
-def _filter_docs_by_vector_relevance(
-    vectorstore,
-    question: str,
-    docs: list[Document],
-    *,
-    min_relevance: float,
-) -> list[Document]:
-    """
-    Giữ chunk có relevance (cosine từ embedding) đủ cao; bỏ hết nếu không chunk nào đạt —
-    tránh đưa chunk “đứng đầu FAISS” dù không thật liên quan (vd. hỏi Hacker mà chỉ có text cà phê).
-    """
-    if not docs or min_relevance <= 0 or not RAG_VECTOR_RELEVANCE_FILTER:
-        return docs
-    try:
-        pool = vectorstore.similarity_search_with_relevance_scores(
-            question, k=max(48, len(docs) * 8)
-        )
-    except Exception:
-        return docs
-
-    rel: dict[str, float] = {}
-    for d, score in pool:
-        rel[d.page_content] = max(rel.get(d.page_content, 0.0), float(score))
-
-    kept = [d for d in docs if rel.get(d.page_content, 0.0) >= min_relevance]
-    return kept
 
 
 def _citations_match_answer(answer: str, citations: list[CitationSource]) -> list[CitationSource]:
@@ -276,25 +246,46 @@ def run_rag(
     """
     t_start = time.perf_counter()
 
+    rerank_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
+    rerank_debug = os.getenv("RERANK_DEBUG", "false").strip().lower() == "true"
+    retrieve_candidates = int(os.getenv("RETRIEVE_CANDIDATES", str(RETRIEVER_TOP_K)))
+    context_top_k = int(os.getenv("RERANK_TOP_K", str(RETRIEVER_TOP_K)))
+    rerank_max_chars = int(os.getenv("RERANK_MAX_CHARS", "2000"))
+
+    if rerank_debug:
+        _logger.warning(
+            "[RAG] config: rerank_enabled=%s rerank_debug=%s retrieve_candidates=%s context_top_k=%s rerank_max_chars=%s",
+            rerank_enabled,
+            rerank_debug,
+            retrieve_candidates,
+            context_top_k,
+            rerank_max_chars,
+        )
     # ── Chọn retriever phù hợp với mode ──────────────────────────────────────
+    t_retrieval_start = time.perf_counter()
     if search_mode == "hybrid":
         retriever = build_hybrid_retriever(
             vectorstore=index.vectorstore,
             chunks=index.chunks,
-            k=RETRIEVER_TOP_K,
+            k=retrieve_candidates,
             bm25_weight=bm25_weight,
         )
     else:
-        retriever = build_vector_retriever(index.vectorstore, k=RETRIEVER_TOP_K)
+        retriever = build_vector_retriever(index.vectorstore, k=retrieve_candidates)
 
     # ── Retrieve docs (sau đó lọc theo relevance để khớp citation ↔ câu hỏi) ──
     docs = retriever.invoke(question)
-    docs = _filter_docs_by_vector_relevance(
-        index.vectorstore,
-        question,
-        docs,
-        min_relevance=RAG_MIN_VECTOR_RELEVANCE,
-    )
+
+    
+    retrieval_ms = (time.perf_counter() - t_retrieval_start) * 1000
+    if rerank_debug:
+        _logger.warning(
+            "[RAG] retrieval done: mode=%s candidates=%s/%s retrieval_ms=%.2f",
+            search_mode,
+            len(docs),
+            retrieve_candidates,
+            retrieval_ms,
+        )
 
     # Không gọi LLM khi không có chunk đạt ngưỡng — tránh model dùng kiến thức có sẵn
     if not docs:
@@ -303,6 +294,34 @@ def run_rag(
             answer=_NO_INFO_PHRASE,
             citations=[],
             latency_ms=round(latency_ms, 2),
+            retrieval_ms=round(retrieval_ms, 2),
+            rerank_ms=0.0,
+            llm_ms=0.0,
+            rerank_enabled=rerank_enabled,
+            retrieve_candidates=retrieve_candidates,
+            context_top_k=context_top_k,
+        )
+
+    # ── Optional re-ranking (cross-encoder) ──────────────────────────────────
+    t_rerank_start = time.perf_counter()
+    if rerank_enabled:
+        docs, _scores = rerank_documents(
+            question,
+            docs,
+            top_k=context_top_k,
+            max_chars=rerank_max_chars,
+            enabled=True,
+        )
+    else:
+        docs = docs[: max(0, context_top_k)]
+    rerank_ms = (time.perf_counter() - t_rerank_start) * 1000
+    if rerank_debug:
+        _logger.warning(
+            "[RAG] rerank: enabled=%s kept=%s/%s rerank_ms=%.2f",
+            rerank_enabled,
+            len(docs),
+            context_top_k,
+            rerank_ms,
         )
 
     # ── Build prompt và gọi LLM ───────────────────────────────────────────────
@@ -312,7 +331,18 @@ def run_rag(
     prompt = _build_prompt(context, question, history_text)
 
     llm = get_llm()
+    t_llm_start = time.perf_counter()
     answer = llm.invoke(prompt)
+    llm_ms = (time.perf_counter() - t_llm_start) * 1000
+    if rerank_debug:
+        total_ms = (time.perf_counter() - t_start) * 1000
+        _logger.warning(
+            "[RAG] llm_ms=%.2f total_ms=%.2f (retrieval_ms=%.2f, rerank_ms=%.2f)",
+            llm_ms,
+            total_ms,
+            retrieval_ms,
+            rerank_ms,
+        )
 
     citations = _build_citation_list(docs)
     citations = _citations_match_answer(answer, citations)
@@ -323,6 +353,12 @@ def run_rag(
         answer=answer,
         citations=citations,
         latency_ms=round(latency_ms, 2),
+        retrieval_ms=round(retrieval_ms, 2),
+        rerank_ms=round(rerank_ms, 2),
+        llm_ms=round(llm_ms, 2),
+        rerank_enabled=rerank_enabled,
+        retrieve_candidates=retrieve_candidates,
+        context_top_k=context_top_k,
     )
 
 

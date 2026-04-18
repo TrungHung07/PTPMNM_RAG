@@ -67,6 +67,7 @@ async def get_all_sessions():
     ]
 
 
+
 @router.get("/{file_id}", response_model=HistoryResponse)
 async def get_history(file_id: str):
     """Trả về toàn bộ lịch sử hội thoại của một file."""

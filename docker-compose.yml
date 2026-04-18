@@ -39,22 +39,22 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  app:
-    build: .
-    container_name: ptpmnm_app
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@postgres:5432/${POSTGRES_DB:-ragdb}
-      OLLAMA_BASE_URL: http://ollama:11434
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      ollama:
-        condition: service_started
+  # app:
+  #   build: .
+  #   container_name: ptpmnm_app
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@postgres:5432/${POSTGRES_DB:-ragdb}
+  #     OLLAMA_BASE_URL: http://ollama:11434
+  #   volumes:
+  #     - ./data:/app/data
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     ollama:
+  #       condition: service_started
 
 volumes:
   postgres_data:
