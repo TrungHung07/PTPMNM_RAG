@@ -2,11 +2,17 @@
 FastAPI application entry point.
 
 Routes:
-  POST /upload              — Upload tài liệu, build RAGIndex (FAISS + BM25 data)
-  POST /ask                 — Hỏi đáp với search_mode tùy chọn (vector hoặc hybrid)
-  POST /compare             — So sánh kết quả vector vs hybrid trên cùng câu hỏi
-  DELETE /vectorstore       — Xóa toàn bộ index trong memory
+  POST /upload                        — Upload tài liệu, build RAGIndex (FAISS + BM25 data)
+  POST /ask                           — Hỏi đáp với search_mode tùy chọn (vector hoặc hybrid)
+  POST /compare                       — So sánh kết quả vector vs hybrid trên cùng câu hỏi
+  POST /sessions/{session_id}/restore — Restore RAG index từ disk cho một phiên cụ thể
+  DELETE /vectorstore                 — Xóa toàn bộ index trong memory
   DELETE /vectorstore/{session_id}/{file_id} — Xóa index một file trong phiên
+
+Cơ chế persist:
+  - DB (PostgreSQL): lưu session / documents / messages — không bao giờ mất
+  - data/           : lưu file gốc upload — persist qua restart
+  - INDEX_DB        : FAISS index in-memory — tự động rebuilt từ data/ khi cần
 """
 try:
     # Load biến môi trường từ file .env khi chạy local (py app.py)
@@ -38,7 +44,7 @@ from src.rag.pipeline import (
 )
 from src.history.router import router as history_router
 from src.history.router import append_message, get_recent_messages
-from src.database import get_pool, close_pool, db_insert_session, db_insert_document
+from src.database import get_pool, close_pool, db_insert_session, db_insert_document, db_get_documents_by_session
 from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse
 
 @asynccontextmanager
@@ -87,7 +93,7 @@ def _merged_index_for_files(
 
 
 # ─────────────────────────────────────────────
-# Internal helper
+# Internal helpers
 # ─────────────────────────────────────────────
 
 def load_documents(file_path: Path) -> list[Document]:
@@ -109,6 +115,44 @@ def load_documents(file_path: Path) -> list[Document]:
     elif suffix == ".docx":
         return extract_documents_docx(file_path)
     raise ValueError(f"Định dạng file không hỗ trợ: {file_path.suffix}")
+
+
+async def _restore_session_from_disk(session_id: str) -> list[str]:
+    """
+    Tìm file gốc trên disk và rebuild FAISS index cho tất cả documents
+    thuộc session_id. Cập nhật INDEX_DB nếu thành công.
+
+    File trên disk được lưu theo pattern: data/{doc_id}_{file_name}
+
+    Returns:
+        Danh sách tên file bị thiếu (không tìm thấy trên disk).
+        List rỗng nghĩa là restore thành công toàn bộ.
+    """
+    docs = await db_get_documents_by_session(session_id)
+    if not docs:
+        return ["__session_not_found__"]
+
+    missing: list[str] = []
+    for doc in docs:
+        file_id   = str(doc["doc_id"])
+        file_name = doc["file_name"]
+
+        # Tìm file theo prefix doc_id (phần tên gốc có thể chứa ký tự đặc biệt)
+        data_dir  = Path("data")
+        candidates = list(data_dir.glob(f"{file_id}_*"))
+        if not candidates:
+            missing.append(file_name)
+            continue
+
+        file_path = candidates[0]
+        try:
+            documents = load_documents(file_path)
+            index     = build_index(documents)
+            INDEX_DB[session_id][file_id] = index
+        except Exception as exc:
+            missing.append(f"{file_name} ({exc})")
+
+    return missing
 
 
 # ─────────────────────────────────────────────
@@ -186,15 +230,34 @@ async def ask(req: AskRequest):
       Tốt với câu hỏi mang tính diễn đạt lại, paraphrase.
 
     Trường `bm25_weight` điều chỉnh tỷ lệ ảnh hưởng của BM25 trong hybrid mode.
-    """
-    if req.session_id not in INDEX_DB:
-        return AskResponse(
-            question=req.question,
-            answer="Lỗi: Session không tồn tại. Vui lòng upload tài liệu trước.",
-            citations=[],
-            search_mode=req.search_mode,
-        )
 
+    **Auto-restore:** Nếu server vừa restart, RAG index được tự động rebuild từ
+    file gốc trên disk — người dùng không cần upload lại.
+    """
+    # Nếu session chưa có trong memory → thử auto-restore từ disk
+    if req.session_id not in INDEX_DB:
+        missing = await _restore_session_from_disk(req.session_id)
+
+        if "__session_not_found__" in missing:
+            return AskResponse(
+                question=req.question,
+                answer="Lỗi: Session không tồn tại. Vui lòng upload tài liệu trước.",
+                citations=[],
+                search_mode=req.search_mode,
+            )
+
+        if missing:
+            # Một số file bị thiếu trên disk
+            return AskResponse(
+                question=req.question,
+                answer=(
+                    f"Lỗi: Không tìm thấy file trên disk: {', '.join(missing)}.\n"
+                    f"Vui lòng upload lại các file bị thiếu để tiếp tục."
+                ),
+                citations=[],
+                search_mode=req.search_mode,
+            )
+        # Restore thành công — tiếp tục bình thường
 
     index, err = _merged_index_for_files(req.session_id, req.file_ids)
     if err:
@@ -205,7 +268,7 @@ async def ask(req: AskRequest):
             search_mode=req.search_mode,
         )
 
-    chat_history = await get_recent_messages(req.session_id)
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
     result = ask_question(
         index=index,
         question=req.question,
@@ -213,7 +276,7 @@ async def ask(req: AskRequest):
         search_mode=req.search_mode,
         bm25_weight=req.bm25_weight,
     )
-    await append_message(req.session_id, req.question, result.answer)
+    await append_message(req.session_id, req.question, result.answer, req.file_ids)
     return result
 
 
@@ -236,16 +299,26 @@ async def compare(req: AskRequest):
     Response kèm `latency_ms` của từng mode để so sánh performance.
     """
     if req.session_id not in INDEX_DB:
-        raise HTTPException(
-            status_code=404,
-            detail="session_id không tồn tại. Vui lòng upload tài liệu trước.",
-        )
+        missing = await _restore_session_from_disk(req.session_id)
+        if "__session_not_found__" in missing:
+            raise HTTPException(
+                status_code=404,
+                detail="session_id không tồn tại. Vui lòng upload tài liệu trước.",
+            )
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Không tìm thấy file trên disk: {', '.join(missing)}. "
+                    f"Vui lòng upload lại các file bị thiếu để tiếp tục."
+                ),
+            )
 
     index, err = _merged_index_for_files(req.session_id, req.file_ids)
     if err:
         raise HTTPException(status_code=404, detail=err)
 
-    chat_history = await get_recent_messages(req.session_id)
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
 
     vector_result, hybrid_result = compare_search_modes(
         index=index,
@@ -287,6 +360,54 @@ async def clear_vectorstore(session_id: str, file_id: str):
     if not by_file:
         del INDEX_DB[session_id]
     return {"message": f"Đã xóa index file {file_id} trong session {session_id}"}
+
+
+@app.post(
+    "/sessions/{session_id}/restore",
+    tags=["Session"],
+    summary="Restore RAG index từ disk cho một phiên cụ thể",
+)
+async def restore_session(session_id: str):
+    """
+    Rebuild FAISS index cho một phiên từ file gốc đã lưu trên disk.
+
+    Endpoint này thường **không cần gọi thủ công** vì `/ask` và `/compare`
+    đã tự động restore khi phát hiện session chưa có trong memory.
+
+    Dùng khi:
+    - Muốn pre-warm cache trước khi user bắt đầu chat
+    - Debug / kiểm tra xem session có thể restore được không
+
+    Returns:
+        `restored_files`: danh sách file đã rebuild thành công.
+        `missing_files` : danh sách file không tìm thấy trên disk (cần upload lại).
+    """
+    if session_id in INDEX_DB:
+        docs = await db_get_documents_by_session(session_id)
+        return {
+            "message": "Session đã có trong memory, không cần restore.",
+            "session_id": session_id,
+            "restored_files": [d["file_name"] for d in docs],
+            "missing_files": [],
+        }
+
+    missing = await _restore_session_from_disk(session_id)
+
+    if "__session_not_found__" in missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"session_id '{session_id}' không tồn tại trong database.",
+        )
+
+    docs = await db_get_documents_by_session(session_id)
+    restored = [d["file_name"] for d in docs if d["file_name"] not in missing]
+
+    return {
+        "message": "Restore hoàn tất." if not missing else "Restore một phần — một số file bị thiếu.",
+        "session_id": session_id,
+        "restored_files": restored,
+        "missing_files": missing,
+    }
 
 
 if __name__ == "__main__":
