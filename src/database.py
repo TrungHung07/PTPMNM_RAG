@@ -60,23 +60,44 @@ async def db_insert_document(
 
 
 async def db_get_all_sessions() -> list[dict]:
+    """
+    Trả về danh sách tất cả phiên chat, mỗi phiên kèm:
+    - Danh sách tên file (file_names)
+    - Số lượng file (file_count)
+    - Số tin nhắn (message_count)
+    """
     async with get_conn() as conn:
         rows = await conn.fetch("""
             SELECT
                 s.session_id,
                 s.created_at,
-                (
-                    SELECT d.file_name FROM documents d
-                    WHERE d.session_id = s.session_id
-                    ORDER BY d.uploaded_at ASC NULLS LAST
-                    LIMIT 1
-                ) AS filename,
-                COUNT(m.id) AS message_count
+                COALESCE(
+                    ARRAY_AGG(d.file_name ORDER BY d.uploaded_at ASC) FILTER (WHERE d.doc_id IS NOT NULL),
+                    ARRAY[]::text[]
+                ) AS file_names,
+                COUNT(DISTINCT d.doc_id) AS file_count,
+                COUNT(m.id)             AS message_count
             FROM sessions s
-            LEFT JOIN messages m ON m.session_id = s.session_id
+            LEFT JOIN documents d ON d.session_id = s.session_id
+            LEFT JOIN messages  m ON m.session_id = s.session_id
             GROUP BY s.session_id, s.created_at
             ORDER BY s.created_at DESC
         """)
+        return [dict(r) for r in rows]
+
+
+async def db_get_documents_by_session(session_id: str) -> list[dict]:
+    """Trả về danh sách tất cả documents (files) thuộc một session."""
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT doc_id, file_name, file_type, uploaded_at
+            FROM documents
+            WHERE session_id = $1::uuid
+            ORDER BY uploaded_at ASC
+            """,
+            session_id,
+        )
         return [dict(r) for r in rows]
 
 
@@ -95,34 +116,75 @@ async def db_delete_all_sessions() -> None:
 
 # ── Message queries ───────────────────────────────────────────
 
-async def db_append_message(session_id: str, question: str, answer: str) -> None:
+async def db_append_message(
+    session_id: str,
+    question: str,
+    answer: str,
+    file_ids: list[str],
+) -> None:
+    """
+    Lưu một cặp hỏi-đáp vào DB kèm danh sách file_ids đã dùng để trả lời.
+
+    file_ids là doc_id (uuid) của các file trong request. Dùng để lọc
+    conversational history chính xác theo ngữ cảnh file ở bước read.
+    """
+    # asyncpg nhận list Python bình thường cho uuid[] — cast từng phần tử sang uuid
+    uuid_list = [str(fid) for fid in file_ids]
     async with get_conn() as conn:
         await conn.execute(
-            "INSERT INTO messages (session_id, question, answer) VALUES ($1, $2, $3)",
-            session_id, question, answer
+            """
+            INSERT INTO messages (session_id, question, answer, file_ids)
+            VALUES ($1::uuid, $2, $3, $4::uuid[])
+            """,
+            session_id, question, answer, uuid_list,
         )
 
 
 async def db_get_messages(session_id: str) -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT question, answer, created_at FROM messages WHERE session_id = $1 ORDER BY created_at ASC",
+            "SELECT question, answer, created_at, file_ids FROM messages WHERE session_id = $1 ORDER BY created_at ASC",
             session_id,
         )
-        return [dict(r) for r in rows]
+        # Chuyển file_ids từ asyncpg Record sang list[str] thường
+        return [
+            {**dict(r), "file_ids": [str(fid) for fid in (r["file_ids"] or [])]}
+            for r in rows
+        ]
 
 
-async def db_get_recent_messages(session_id: str, limit: int = 5) -> list[dict]:
-    """Lấy N tin nhắn gần nhất - dùng cho Conversational RAG context."""
+async def db_get_recent_messages(
+    session_id: str,
+    file_ids: list[str],
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Lấy N tin nhắn gần nhất có overlap với file_ids đưa vào.
+
+    Logic lọc (Intersection mode):
+      messages.file_ids && $file_ids::uuid[]
+      → giữ lại message có ít nhất 1 file trùng với request.
+      → tự động bỏ qua message cũ có file_ids = '{}' (không overlap với bất kỳ uuid nào).
+
+    Trade-off so với exact-match (file_ids = $file_ids):
+      - Intersection cho phép tái sử dụng history khi một request gồm nhiều file A+B
+        và các lượt trước chỉ dùng A hoặc B đơn lẻ.
+      - Exact-match thành chặt hơn nhưng mất history khi file_ids thay đổi thứ tự.
+    """
+    uuid_list = [str(fid) for fid in file_ids]
     async with get_conn() as conn:
         rows = await conn.fetch(
             """
             SELECT question, answer FROM (
                 SELECT question, answer, created_at
-                FROM messages WHERE session_id = $1
-                ORDER BY created_at DESC LIMIT $2
-            ) sub ORDER BY created_at ASC
+                FROM messages
+                WHERE session_id = $1::uuid
+                  AND file_ids && $2::uuid[]
+                ORDER BY created_at DESC
+                LIMIT $3
+            ) sub
+            ORDER BY created_at ASC
             """,
-            session_id, limit
+            session_id, uuid_list, limit,
         )
         return [dict(r) for r in rows]
