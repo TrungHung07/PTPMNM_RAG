@@ -14,7 +14,7 @@ from functools import lru_cache
 from langchain_core.documents import Document
 
 
-def _rerank_enabled(default: bool = False) -> bool:
+def _rerank_enabled(default: bool = True) -> bool:
     raw = os.getenv("RERANK_ENABLED")
     if raw is None:
         return default
@@ -87,6 +87,11 @@ def rerank_documents(
     scores: list[float] = list(reranker.predict(pairs, batch_size=batch_size))
 
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    
+    # Lọc bỏ các chunk có điểm thấp hơn ngưỡng (cutoff) để tránh rác citation
+    cutoff = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))
+    ranked = [(d, s) for d, s in ranked if s >= cutoff]
+
     ranked = ranked[: min(top_k, len(ranked))]
 
     docs_top = [d for d, _ in ranked]

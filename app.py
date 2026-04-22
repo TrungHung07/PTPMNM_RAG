@@ -160,13 +160,22 @@ async def _restore_session_from_disk(session_id: str) -> list[str]:
 # ─────────────────────────────────────────────
 
 @app.post("/upload", summary="Upload tài liệu PDF/DOCX để indexing")
-async def upload(files: List[UploadFile] = File(...)):
+async def upload(
+    files: List[UploadFile] = File(...),
+    chunk_size: int = 1000,
+    chunk_overlap: int = 200,
+):
     """
     Upload file PDF hoặc DOCX, bóc tách nội dung và xây dựng RAGIndex.
 
     RAGIndex bao gồm:
     - FAISS vector store (dùng cho vector/hybrid search)
     - Danh sách chunk thuần text (dùng cho BM25 index lúc query)
+
+    Args:
+        files: Danh sách file cần upload.
+        chunk_size: Kích thước mỗi chunk (mặc định 1000).
+        chunk_overlap: Độ chồng lấp giữa các chunk (mặc định 200).
 
     Returns:
         `session_id`, `files` (mỗi phần tử: `file_id`, `filename`, `document_count`)
@@ -186,7 +195,7 @@ async def upload(files: List[UploadFile] = File(...)):
             shutil.copyfileobj(file.file, buffer)
             
         documents = load_documents(file_path)
-        index = build_index(documents)
+        index = build_index(documents, chunk_size=chunk_size, overlap=chunk_overlap)
 
         # print("Đây là chunk", index.chunks)
         # print("Đây là vector", index.vectorstore)
