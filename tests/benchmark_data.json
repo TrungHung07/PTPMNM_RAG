@@ -1,0 +1,18 @@
+[
+    {
+        "question": "Chạy bộ mang lại lợi ích gì cho tim mạch?",
+        "expected_answer": "Chạy bộ giúp tăng cường lưu thông máu, giảm huyết áp và cải thiện dung tích phổi."
+    },
+    {
+        "question": "Lợi ích tinh thần của chạy bộ là gì?",
+        "expected_answer": "Giúp tiết ra Endorphin và Dopamine (hormone hạnh phúc), giảm căng thẳng, lo âu và cải thiện giấc ngủ."
+    },
+    {
+        "question": "Những nguyên tắc vàng cho người mới bắt đầu chạy bộ là gì?",
+        "expected_answer": "Lắng nghe cơ thể, kỹ thuật quan trọng hơn tốc độ (tư thế thẳng, tiếp đất giữa bàn chân), và sự kiên trì."
+    },
+    {
+        "question": "Đối thủ lớn nhất trên đường chạy là ai?",
+        "expected_answer": "Là phiên bản lười biếng của bản thân ngày hôm qua."
+    }
+]
