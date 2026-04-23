@@ -161,20 +161,22 @@ def _citations_match_answer(answer: str, citations: list[CitationSource]) -> lis
     return citations
 
 
-def _build_citation_list(docs: list[Document]) -> list[CitationSource]:
+def _build_citation_list(docs: list[Document], scores: list[float] | None = None) -> list[CitationSource]:
     """
     Chuyển list Document được retriever trả về thành list CitationSource.
 
     Args:
         docs: List Document từ kết quả retrieval.
+        scores: Danh sách điểm relevance tương ứng (từ reranker).
 
     Returns:
         List CitationSource dùng trong API response.
     """
-    return [
-        CitationSource(content=doc.page_content, metadata=doc.metadata)
-        for doc in docs
-    ]
+    citations = []
+    for i, doc in enumerate(docs):
+        score = float(scores[i]) if scores and i < len(scores) else None
+        citations.append(CitationSource(content=doc.page_content, metadata=doc.metadata, score=score))
+    return citations
 
 
 def _build_prompt(context: str, question: str, history_text: str) -> str:
@@ -199,14 +201,13 @@ Lịch sử hội thoại trước đó (để hiểu ngữ cảnh follow-up):
     return f"""
 Bạn là AI chỉ được phép trả lời dựa trên thông tin trong tài liệu dưới đây.
 
-QUY TẮC:
-- CHỈ sử dụng thông tin có trong Context.
-- KHÔNG được suy đoán, KHÔNG được dùng kiến thức phổ thông / Wikipedia / định nghĩa có sẵn nếu không có trong Context.
-- Nếu Context không chứa thông tin để trả lời trực tiếp câu hỏi, CHỈ trả lời đúng một câu:
-  "Không tìm thấy thông tin trong tài liệu." — không giải thích thêm.
-- Nếu câu hỏi là follow-up (ví dụ: "giải thích thêm", "ý đó là gì"), hãy dùng Lịch sử hội thoại để hiểu ngữ cảnh (vẫn chỉ được dùng nội dung có trong Context cho phần trả lời).
-- Nếu không tìm thấy câu trả lời trong Context, hãy trả lời:
-  "Không tìm thấy thông tin trong tài liệu."
+QUY TẮC BẮT BUỘC:
+1. CHỈ sử dụng thông tin có trong phần "Context từ tài liệu" dưới đây.
+2. PHẢI TRẢ LỜI BẰNG TIẾNG VIỆT HOẶC TIẾNG ANH (tùy theo ngôn ngữ của câu hỏi). 
+3. TUYỆT ĐỐI CẤM sử dụng tiếng Malay, tiếng Indonesian hay bất kỳ từ ngữ nào từ các ngôn ngữ khác (ví dụ: không dùng "tidak").
+4. KHÔNG được sử dụng kiến thức bên ngoài, không được suy đoán.
+5. Nếu Context không chứa câu trả lời, trả lời: "Không tìm thấy thông tin trong tài liệu." (hoặc bằng tiếng Anh tương ứng).
+5. Nếu câu hỏi là follow-up, dùng Lịch sử để hiểu ngữ cảnh nhưng vẫn chỉ dùng Context để trả lời.
 
 Context từ tài liệu:
 {context}
@@ -225,6 +226,8 @@ def run_rag(
     chat_history: list,
     search_mode: Literal["vector", "hybrid"] = "hybrid",
     bm25_weight: float = 0.5,
+    rerank_enabled: bool | None = None,
+    rerank_threshold: float | None = None,
 ) -> SearchResult:
     """
     Thực thi một lần RAG query, đo latency và trả về SearchResult.
@@ -246,9 +249,11 @@ def run_rag(
     """
     t_start = time.perf_counter()
 
-    rerank_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
+    if rerank_enabled is None:
+        rerank_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
+        
     rerank_debug = os.getenv("RERANK_DEBUG", "false").strip().lower() == "true"
-    retrieve_candidates = int(os.getenv("RETRIEVE_CANDIDATES", str(RETRIEVER_TOP_K)))
+    retrieve_candidates = int(os.getenv("RETRIEVE_CANDIDATES", "10")) # Tăng số lượng candidate ban đầu để reranker có dữ liệu
     context_top_k = int(os.getenv("RERANK_TOP_K", str(RETRIEVER_TOP_K)))
     rerank_max_chars = int(os.getenv("RERANK_MAX_CHARS", "2000"))
 
@@ -304,12 +309,14 @@ def run_rag(
 
     # ── Optional re-ranking (cross-encoder) ──────────────────────────────────
     t_rerank_start = time.perf_counter()
+    _scores = None
     if rerank_enabled:
         docs, _scores = rerank_documents(
             question,
             docs,
             top_k=context_top_k,
             max_chars=rerank_max_chars,
+            threshold=rerank_threshold,
             enabled=True,
         )
     else:
@@ -317,12 +324,15 @@ def run_rag(
     rerank_ms = (time.perf_counter() - t_rerank_start) * 1000
     if rerank_debug:
         _logger.warning(
-            "[RAG] rerank: enabled=%s kept=%s/%s rerank_ms=%.2f",
+            "[RAG] rerank: enabled=%s kept=%s/%s threshold=%s rerank_ms=%.2f",
             rerank_enabled,
             len(docs),
             context_top_k,
+            rerank_threshold,
             rerank_ms,
         )
+        if docs and _scores:
+            _logger.warning("[RAG] top relevance scores: %s", _scores[:3])
 
     # ── Build prompt và gọi LLM ───────────────────────────────────────────────
     context = "\n\n".join(doc.page_content for doc in docs)
@@ -344,7 +354,7 @@ def run_rag(
             rerank_ms,
         )
 
-    citations = _build_citation_list(docs)
+    citations = _build_citation_list(docs, _scores if rerank_enabled else None)
     citations = _citations_match_answer(answer, citations)
 
     latency_ms = (time.perf_counter() - t_start) * 1000
@@ -368,6 +378,8 @@ def ask_question(
     chat_history: list = [],
     search_mode: Literal["vector", "hybrid"] = "hybrid",
     bm25_weight: float = 0.5,
+    rerank_enabled: bool = True,
+    rerank_threshold: float = 0.0,
 ) -> AskResponse:
     """
     API chính để hỏi đáp về tài liệu với lựa chọn chế độ retrieval.
@@ -384,12 +396,21 @@ def ask_question(
     Returns:
         AskResponse chứa question, answer, citations và search_mode đã dùng.
     """
-    result = run_rag(index, question, chat_history, search_mode, bm25_weight)
+    result = run_rag(
+        index, 
+        question, 
+        chat_history, 
+        search_mode, 
+        bm25_weight,
+        rerank_enabled=rerank_enabled,
+        rerank_threshold=rerank_threshold
+    )
     return AskResponse(
         question=question,
         answer=result.answer,
         citations=result.citations,
         search_mode=search_mode,
+        latency_ms=result.latency_ms,
     )
 
 

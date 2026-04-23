@@ -284,6 +284,8 @@ async def ask(req: AskRequest):
         chat_history=chat_history,
         search_mode=req.search_mode,
         bm25_weight=req.bm25_weight,
+        rerank_enabled=req.rerank_enabled,
+        rerank_threshold=req.rerank_threshold,
     )
     await append_message(req.session_id, req.question, result.answer, req.file_ids)
     return result
@@ -335,6 +337,10 @@ async def compare(req: AskRequest):
         chat_history=chat_history,
         bm25_weight=req.bm25_weight,
     )
+    
+    # Ở mode compare, ta có thể muốn ép rerank theo config chung hoặc theo request
+    # Tuy nhiên compare thường dùng để đánh giá retriever nên ta giữ nguyên 
+    # Nếu muốn dùng rerank trong compare, cần update compare_search_modes() signature
 
     return CompareResponse(
         question=req.question,

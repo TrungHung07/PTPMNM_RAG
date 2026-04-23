@@ -14,7 +14,7 @@ from functools import lru_cache
 from langchain_core.documents import Document
 
 
-def _rerank_enabled(default: bool = True) -> bool:
+def _rerank_enabled(default: bool = False) -> bool:
     raw = os.getenv("RERANK_ENABLED")
     if raw is None:
         return default
@@ -32,7 +32,6 @@ def get_reranker():
 
     model_name = os.getenv(
         "RERANK_MODEL",
-        # Default nhẹ, đủ để validate pipeline/latency trước khi thay model khác
         "cross-encoder/ms-marco-MiniLM-L-6-v2",
     )
 
@@ -57,6 +56,7 @@ def rerank_documents(
     *,
     top_k: int,
     max_chars: int,
+    threshold: float | None = None,
     batch_size: int | None = None,
     enabled: bool | None = None,
 ) -> tuple[list[Document], list[float] | None]:
@@ -89,7 +89,11 @@ def rerank_documents(
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
     
     # Lọc bỏ các chunk có điểm thấp hơn ngưỡng (cutoff) để tránh rác citation
-    cutoff = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))
+    if threshold is not None:
+        cutoff = threshold
+    else:
+        cutoff = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))
+        
     ranked = [(d, s) for d, s in ranked if s >= cutoff]
 
     ranked = ranked[: min(top_k, len(ranked))]

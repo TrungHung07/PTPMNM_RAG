@@ -96,6 +96,22 @@ class AskRequest(BaseModel):
         le=1.0,
         description="Trọng số BM25 trong hybrid mode [0.0, 1.0]. Vector weight = 1 - giá trị này."
     )
+    rerank_enabled: bool = Field(
+        default=True,
+        description="Bật/tắt reranking bằng Cross-Encoder"
+    )
+    rerank_threshold: float = Field(
+        default=0.0,
+        description="Ngưỡng relevance của reranker để giữ lại chunk"
+    )
+    rerank_enabled: bool = Field(
+        default=True,
+        description="Bật/tắt reranking bằng Cross-Encoder"
+    )
+    rerank_threshold: float = Field(
+        default=0.0,
+        description="Ngưỡng relevance của reranker để giữ lại chunk"
+    )
 
     @field_validator("file_ids", mode="after")
     @classmethod
@@ -121,6 +137,7 @@ class CitationSource(BaseModel):
     """
     content: str
     metadata: dict[str, Any]
+    score: float | None = None
 
 
 class AskResponse(BaseModel):
@@ -132,11 +149,13 @@ class AskResponse(BaseModel):
         answer: Câu trả lời do AI sinh ra dựa trên nội dung tài liệu.
         citations: Các đoạn văn gốc được dùng làm căn cứ trả lời.
         search_mode: Chế độ tìm kiếm đã được sử dụng ("vector" hoặc "hybrid").
+        latency_ms: Thời gian xử lý tổng cộng (ms).
     """
     question: str
     answer: str
     citations: list[CitationSource]
     search_mode: str = "vector"     # Ghi lại chế độ đã dùng để client biết
+    latency_ms: float | None = Field(default=None, description="Thời gian xử lý tổng cộng (ms)")
 
 
 class SearchResult(BaseModel):
