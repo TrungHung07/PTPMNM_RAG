@@ -149,40 +149,22 @@ class AskResponse(BaseModel):
         answer: Câu trả lời do AI sinh ra dựa trên nội dung tài liệu.
         citations: Các đoạn văn gốc được dùng làm căn cứ trả lời.
         search_mode: Chế độ tìm kiếm đã được sử dụng ("vector" hoặc "hybrid").
-        latency_ms: Thời gian xử lý tổng cộng (ms).
     """
     question: str
     answer: str
     citations: list[CitationSource]
-    search_mode: str = "vector"     # Ghi lại chế độ đã dùng để client biết
-    latency_ms: float | None = Field(default=None, description="Thời gian xử lý tổng cộng (ms)")
+    search_mode: str = "vector"
 
 
 class SearchResult(BaseModel):
     """
-    Kết quả của một lần thực thi RAG (answer + citations + metadata hiệu năng).
-    Dùng làm sub-object trong CompareResponse.
-
-    Attributes:
-        answer: Câu trả lời AI sinh ra.
-        citations: Danh sách nguồn trích dẫn.
-        latency_ms: Thời gian xử lý tổng cộng tính bằng millisecond.
-        retrieval_ms: Thời gian retrieval (ms).
-        rerank_ms: Thời gian re-ranking (ms) — 0 hoặc None nếu tắt.
-        llm_ms: Thời gian gọi LLM (ms).
-        rerank_enabled: Có bật rerank trong request này hay không.
-        retrieve_candidates: Số candidate retrieve ban đầu.
-        context_top_k: Số chunk cuối cùng đưa vào LLM context.
+    Kết quả của một lần thực thi RAG.
     """
     answer: str
     citations: list[CitationSource]
-    latency_ms: float = Field(description="Thời gian xử lý (ms)")
-    retrieval_ms: float | None = Field(default=None, description="Thời gian retrieval (ms)")
-    rerank_ms: float | None = Field(default=None, description="Thời gian rerank (ms)")
-    llm_ms: float | None = Field(default=None, description="Thời gian gọi LLM (ms)")
-    rerank_enabled: bool | None = Field(default=None, description="Có bật rerank hay không")
-    retrieve_candidates: int | None = Field(default=None, description="Số candidate retrieve ban đầu")
-    context_top_k: int | None = Field(default=None, description="Số chunk cuối cùng đưa vào LLM")
+    rerank_enabled: bool | None = None
+    retrieve_candidates: int | None = None
+    context_top_k: int | None = None
 
 
 class CompareResponse(BaseModel):

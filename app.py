@@ -25,8 +25,7 @@ except Exception:
 
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from langchain_core.documents.base import Document
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pathlib import Path
@@ -49,10 +48,31 @@ from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Khởi động (Warm-up) các model để tránh latency lượt đầu
+    print("🚀 Đang khởi tạo các AI models (Embedding & Reranker)...")
+    try:
+        from src.rag.rerank import get_reranker
+        from src.rag.embedding import get_embedding
+        
+        # Load Reranker
+        get_reranker()
+        # Load Embedding
+        get_embedding()
+        
+        # Load LLM (Ollama) - Chạy thử một prompt cực ngắn để nạp model
+        from src.rag.llm import get_llm
+        llm = get_llm()
+        llm.invoke("Hi") 
+        
+        print("✅ Các AI models đã sẵn sàng!")
+    except Exception as e:
+        print(f"⚠️ Lỗi khi khởi tạo models: {e}")
+
     """Khởi tạo DB connection pool khi app start, đóng khi shutdown."""
     await get_pool()
     yield
     await close_pool()
+    print("👋 Đang đóng ứng dụng...")
 
 
 app = FastAPI(

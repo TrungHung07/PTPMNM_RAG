@@ -290,7 +290,7 @@ if "chunk_overlap" not in st.session_state:
 if "rerank_enabled" not in st.session_state:
     st.session_state.rerank_enabled = True
 if "rerank_threshold" not in st.session_state:
-    st.session_state.rerank_threshold = 0.0
+    st.session_state.rerank_threshold = 0.1
 
 @st.dialog("Cấu hình hệ thống")
 def settings_dialog():
@@ -321,8 +321,8 @@ def settings_dialog():
     st.session_state.rerank_enabled = st.toggle("Bật Reranking (Cross-Encoder)", value=st.session_state.rerank_enabled)
     if st.session_state.rerank_enabled:
         st.session_state.rerank_threshold = st.slider(
-            "Độ khắt khe của nguồn trích dẫn", -2.0, 2.0, st.session_state.rerank_threshold, 0.1,
-            help="Tăng giá trị này nếu bạn thấy có nguồn dư thừa. Giá trị khuyên dùng cho model cũ: 0.0 đến 0.5."
+            "Độ khắt khe của nguồn trích dẫn", 0.0, 1.0, st.session_state.rerank_threshold, 0.05,
+            help="Model PhoRanker dùng thang điểm 0-1. Tăng lên 0.2-0.5 để lọc bỏ hoàn toàn các đoạn không liên quan."
         )
             
     
@@ -616,40 +616,26 @@ for msg in st.session_state.messages:
             c1, c2 = st.columns(2)
             with c1:
                 cit_count_v = len(res_v.get('citations', []))
-                cit_text_v = res_v['citations'][0]['content'][:120].replace('\n', ' ') + "..." if cit_count_v > 0 else "Không tìm thấy nguồn."
                 st.markdown(f"""<div class="comp-card">
                     <div class="comp-header vector-header">Vector Search</div>
                     <div class="comp-content">
                         {res_v["answer"]}
-                        <div class="source-summary">
-                            <div class="source-title">Top Nguồn ({cit_count_v})</div>
-                            <div style="color:#5F6368; font-style: italic;">"{cit_text_v}"</div>
-                        </div>
-                        <div class="metric-row">
-                            <div class="metric-item"><span>Tìm kiếm</span><span class="metric-value">{res_v.get('retrieval_ms', 0)}ms</span></div>
-                            <div class="metric-item"><span>Trả lời</span><span class="metric-value">{res_v.get('llm_ms', 0)}ms</span></div>
-                            <div class="metric-item"><span>Tổng</span><span class="metric-value">{res_v['latency_ms']}ms</span></div>
-                        </div>
+                        <div style="margin-top: 15px;"></div>
                     </div>
                 </div>""", unsafe_allow_html=True)
+                with st.expander(f"📚 Chi tiết nguồn Vector ({cit_count_v})"):
+                    render_citations(res_v["citations"], query=msg["compare_data"].get("question", ""))
             with c2:
                 cit_count_h = len(res_h.get('citations', []))
-                cit_text_h = res_h['citations'][0]['content'][:120].replace('\n', ' ') + "..." if cit_count_h > 0 else "Không tìm thấy nguồn."
                 st.markdown(f"""<div class="comp-card">
                     <div class="comp-header hybrid-header">Hybrid Search</div>
                     <div class="comp-content">
                         {res_h["answer"]}
-                        <div class="source-summary">
-                            <div class="source-title">Top Nguồn ({cit_count_h})</div>
-                            <div style="color:#5F6368; font-style: italic;">"{cit_text_h}"</div>
-                        </div>
-                        <div class="metric-row">
-                            <div class="metric-item"><span>Tìm kiếm</span><span class="metric-value">{res_h.get('retrieval_ms', 0)}ms</span></div>
-                            <div class="metric-item"><span>Trả lời</span><span class="metric-value">{res_h.get('llm_ms', 0)}ms</span></div>
-                            <div class="metric-item"><span>Tổng</span><span class="metric-value">{res_h['latency_ms']}ms</span></div>
-                        </div>
+                        <div style="margin-top: 15px;"></div>
                     </div>
                 </div>""", unsafe_allow_html=True)
+                with st.expander(f"📚 Chi tiết nguồn Hybrid ({cit_count_h})"):
+                    render_citations(res_h["citations"], query=msg["compare_data"].get("question", ""))
         else:
             st.markdown(msg["content"])
             if "citations" in msg and msg["citations"]:
@@ -660,8 +646,6 @@ for msg in st.session_state.messages:
                         user_query = m["content"]
                         break
                 render_citations(msg["citations"], query=user_query)
-            if msg.get("latency") is not None:
-                st.caption(f"⏱ {msg['latency']:.0f}ms")
 
 # Chat Input
 if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
@@ -691,6 +675,7 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
                         st.session_state.messages.append({
                             "role": "assistant",
                             "compare_data": {
+                                "question": res["question"],
                                 "vector": res["vector_result"],
                                 "hybrid": res["hybrid_result"]
                             }

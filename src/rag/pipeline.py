@@ -199,20 +199,20 @@ Lịch sử hội thoại trước đó (để hiểu ngữ cảnh follow-up):
 """ if history_text else ""
 
     return f"""
-Bạn là AI chỉ được phép trả lời dựa trên thông tin trong tài liệu dưới đây.
+BẠN LÀ MỘT TRỢ LÝ AI CHUYÊN NGHIỆP. BẠN TUYỆT ĐỐI CHỈ ĐƯỢC DÙNG TIẾNG VIỆT HOẶC TIẾNG ANH.
 
 QUY TẮC BẮT BUỘC:
-1. CHỈ sử dụng thông tin có trong phần "Context từ tài liệu" dưới đây.
-2. PHẢI TRẢ LỜI BẰNG TIẾNG VIỆT HOẶC TIẾNG ANH (tùy theo ngôn ngữ của câu hỏi). 
-3. TUYỆT ĐỐI CẤM sử dụng tiếng Malay, tiếng Indonesian hay bất kỳ từ ngữ nào từ các ngôn ngữ khác (ví dụ: không dùng "tidak").
-4. KHÔNG được sử dụng kiến thức bên ngoài, không được suy đoán.
-5. Nếu Context không chứa câu trả lời, trả lời: "Không tìm thấy thông tin trong tài liệu." (hoặc bằng tiếng Anh tương ứng).
-5. Nếu câu hỏi là follow-up, dùng Lịch sử để hiểu ngữ cảnh nhưng vẫn chỉ dùng Context để trả lời.
+1. KHÔNG sử dụng bất kỳ từ ngữ nào từ tiếng Malay, Indonesian (Ví dụ: KHÔNG dùng "tidak", "usia", "selain đó", "yang quan trọng").
+2. Trả lời dựa trên Context. Nếu không có thông tin, trả lời "Không tìm thấy thông tin".
+3. Trả lời bằng cùng ngôn ngữ với câu hỏi của người dùng.
 
 Context từ tài liệu:
 {context}
+
 {history_section}
+
 Câu hỏi hiện tại: {question}
+TRẢ LỜI (CHỈ DÙNG TIẾNG VIỆT HOẶC TIẾNG ANH):
 """.strip()
 
 
@@ -245,9 +245,9 @@ def run_rag(
         bm25_weight: Trọng số BM25 khi dùng hybrid mode [0.0, 1.0].
 
     Returns:
-        SearchResult chứa answer, citations và latency_ms.
+        SearchResult chứa answer, citations.
     """
-    t_start = time.perf_counter()
+    # t_start = time.perf_counter()
 
     if rerank_enabled is None:
         rerank_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
@@ -294,21 +294,15 @@ def run_rag(
 
     # Không gọi LLM khi không có chunk đạt ngưỡng — tránh model dùng kiến thức có sẵn
     if not docs:
-        latency_ms = (time.perf_counter() - t_start) * 1000
         return SearchResult(
             answer=_NO_INFO_PHRASE,
             citations=[],
-            latency_ms=round(latency_ms, 2),
-            retrieval_ms=round(retrieval_ms, 2),
-            rerank_ms=0.0,
-            llm_ms=0.0,
             rerank_enabled=rerank_enabled,
             retrieve_candidates=retrieve_candidates,
             context_top_k=context_top_k,
         )
 
     # ── Optional re-ranking (cross-encoder) ──────────────────────────────────
-    t_rerank_start = time.perf_counter()
     _scores = None
     if rerank_enabled:
         docs, _scores = rerank_documents(
@@ -321,15 +315,14 @@ def run_rag(
         )
     else:
         docs = docs[: max(0, context_top_k)]
-    rerank_ms = (time.perf_counter() - t_rerank_start) * 1000
+    
     if rerank_debug:
         _logger.warning(
-            "[RAG] rerank: enabled=%s kept=%s/%s threshold=%s rerank_ms=%.2f",
+            "[RAG] rerank: enabled=%s kept=%s/%s threshold=%s",
             rerank_enabled,
             len(docs),
             context_top_k,
             rerank_threshold,
-            rerank_ms,
         )
         if docs and _scores:
             _logger.warning("[RAG] top relevance scores: %s", _scores[:3])
@@ -341,31 +334,14 @@ def run_rag(
     prompt = _build_prompt(context, question, history_text)
 
     llm = get_llm()
-    t_llm_start = time.perf_counter()
     answer = llm.invoke(prompt)
-    llm_ms = (time.perf_counter() - t_llm_start) * 1000
-    if rerank_debug:
-        total_ms = (time.perf_counter() - t_start) * 1000
-        _logger.warning(
-            "[RAG] llm_ms=%.2f total_ms=%.2f (retrieval_ms=%.2f, rerank_ms=%.2f)",
-            llm_ms,
-            total_ms,
-            retrieval_ms,
-            rerank_ms,
-        )
 
     citations = _build_citation_list(docs, _scores if rerank_enabled else None)
     citations = _citations_match_answer(answer, citations)
 
-    latency_ms = (time.perf_counter() - t_start) * 1000
-
     return SearchResult(
         answer=answer,
         citations=citations,
-        latency_ms=round(latency_ms, 2),
-        retrieval_ms=round(retrieval_ms, 2),
-        rerank_ms=round(rerank_ms, 2),
-        llm_ms=round(llm_ms, 2),
         rerank_enabled=rerank_enabled,
         retrieve_candidates=retrieve_candidates,
         context_top_k=context_top_k,
@@ -410,7 +386,6 @@ def ask_question(
         answer=result.answer,
         citations=result.citations,
         search_mode=search_mode,
-        latency_ms=result.latency_ms,
     )
 
 
@@ -421,26 +396,19 @@ def compare_search_modes(
     bm25_weight: float = 0.5,
 ) -> tuple[SearchResult, SearchResult]:
     """
-    Chạy cùng một câu hỏi trên cả hai chế độ retrieval và trả về kết quả để so sánh.
-
-    Hàm này intentionally gọi LLM 2 lần — chỉ dùng cho mục đích đánh giá,
-    không nên dùng trong production flow thông thường.
-
-    Thứ tự: vector trước, hybrid sau (để latency đo được không bị ảnh hưởng
-    bởi cache warm-up của embedding model).
-
-    Args:
-        index: RAGIndex chứa vectorstore và chunks.
-        question: Câu hỏi cần so sánh.
-        chat_history: Lịch sử hội thoại.
-        bm25_weight: Trọng số BM25 cho hybrid mode.
-
-    Returns:
-        tuple (vector_result, hybrid_result) — cả hai đều là SearchResult.
+    So sánh công bằng bằng cách đảm bảo cả 2 đều dùng chung config rerank từ Env.
     """
-    vector_result = run_rag(index, question, chat_history, "vector", bm25_weight)
-    hybrid_result = run_rag(index, question, chat_history, "hybrid", bm25_weight)
-    return vector_result, hybrid_result
+    r_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
+    r_threshold = float(os.getenv("RERANK_THRESHOLD", "0.0"))
+
+    # Chạy Vector
+    v_res = run_rag(index, question, chat_history, "vector", bm25_weight, 
+                    rerank_enabled=r_enabled, rerank_threshold=r_threshold)
+    # Chạy Hybrid
+    h_res = run_rag(index, question, chat_history, "hybrid", bm25_weight,
+                    rerank_enabled=r_enabled, rerank_threshold=r_threshold)
+    
+    return v_res, h_res
 
 
 __all__ = [
