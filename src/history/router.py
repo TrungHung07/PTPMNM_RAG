@@ -3,17 +3,19 @@
 # Người phụ trách: [Tên thành viên phụ trách phần này]
 #
 # Chức năng:
-#   - Lưu trữ lịch sử hội thoại theo từng file (session) vào PostgreSQL
+#   - Lưu trữ lịch sử hội thoại theo từng phiên (session) vào PostgreSQL
+#   - Một session có thể chứa nhiều file (multi-file upload)
 #   - API lấy lịch sử để hiển thị trên sidebar
 # ============================================================
 
-from fastapi import APIRouter
-from typing import List
+from fastapi import APIRouter, HTTPException
+from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime
 
 from src.database import (
-    db_create_session,
     db_get_all_sessions,
+    db_get_documents_by_session,
     db_delete_session,
     db_delete_all_sessions,
     db_append_message,
@@ -25,81 +27,170 @@ router = APIRouter(prefix="/history", tags=["Chat History"])
 
 
 # ── Pydantic models ──────────────────────────────────────────
+
 class ChatMessage(BaseModel):
     question: str
     answer: str
+    created_at: Optional[datetime] = None
+    file_ids: List[str] = []       # doc_id của các file đã dùng để trả lời lượt này
+    search_mode: str = "unknown"   # chiến lược retrieval đã dùng
+    citations: List = []            # danh sách citation nguồn (list[dict])
+
+
+class FileInfo(BaseModel):
+    """Thông tin một file trong phiên."""
+    file_id: str       # doc_id (UUID)
+    file_name: str
+    file_type: str
+    uploaded_at: Optional[datetime] = None
 
 
 class SessionSummary(BaseModel):
-    file_id: str
-    filename: str
+    """Tóm tắt một phiên — dùng để render sidebar."""
+    session_id: str
+    created_at: Optional[datetime] = None
+    files: List[FileInfo]          # danh sách tất cả file trong phiên
+    file_count: int
     message_count: int
 
 
-class HistoryResponse(BaseModel):
-    file_id: str
-    filename: str
+class SessionHistoryResponse(BaseModel):
+    """Chi tiết lịch sử hội thoại của một phiên."""
+    session_id: str
+    created_at: Optional[datetime] = None
+    files: List[FileInfo]          # danh sách tất cả file trong phiên
     history: List[ChatMessage]
 
 
 # ── Helper functions (gọi từ app.py) ─────────────────────────
-async def init_history(file_id: str, filename: str) -> None:
-    """Tạo session mới trong DB khi upload file."""
-    await db_create_session(file_id, filename)
+
+async def append_message(
+    session_id: str,
+    question: str,
+    answer: str,
+    file_ids: list[str],
+    search_mode: str = "unknown",
+    citations: list | None = None,
+) -> None:
+    """Lưu một cặp hỏi-đáp vào DB kèm file_ids, search_mode và citations."""
+    await db_append_message(session_id, question, answer, file_ids, search_mode, citations)
 
 
-async def append_message(file_id: str, question: str, answer: str) -> None:
-    """Lưu một cặp hỏi-đáp vào DB."""
-    await db_append_message(file_id, question, answer)
+async def get_recent_messages(
+    session_id: str,
+    file_ids: list[str],
+    limit: int = 5,
+) -> list:
+    """Lấy N tin nhắn gần nhất đã dùng cùng tập file — dùng cho Conversational RAG."""
+    return await db_get_recent_messages(session_id, file_ids, limit)
 
-
-async def get_recent_messages(file_id: str, limit: int = 5) -> list:
-    """Lấy N tin nhắn gần nhất - dùng cho Conversational RAG."""
-    return await db_get_recent_messages(file_id, limit)
 
 
 # ── API endpoints ─────────────────────────────────────────────
-@router.get("", response_model=List[SessionSummary])
+
+@router.get("", response_model=List[SessionSummary], summary="Lấy danh sách tất cả phiên chat")
 async def get_all_sessions():
-    """Trả về danh sách tóm tắt tất cả các phiên chat (dùng cho sidebar)."""
+    """
+    Trả về danh sách tóm tắt tất cả các phiên chat (dùng cho sidebar).
+
+    Mỗi phiên bao gồm:
+    - `session_id`: ID phiên
+    - `files`: danh sách tất cả file đã upload trong phiên (file_id, file_name, file_type)
+    - `file_count`: tổng số file trong phiên
+    - `message_count`: tổng số tin nhắn trong phiên
+    """
     rows = await db_get_all_sessions()
-    return [
-        {
-            "file_id": str(r["file_id"]),
-            "filename": r["filename"],
-            "message_count": r["message_count"],
-        }
-        for r in rows
+    result = []
+    for r in rows:
+        # Lấy danh sách files đầy đủ từ bảng documents
+        docs = await db_get_documents_by_session(str(r["session_id"]))
+        result.append(
+            SessionSummary(
+                session_id=str(r["session_id"]),
+                created_at=r.get("created_at"),
+                files=[
+                    FileInfo(
+                        file_id=str(d["doc_id"]),
+                        file_name=d["file_name"],
+                        file_type=d["file_type"],
+                        uploaded_at=d.get("uploaded_at"),
+                    )
+                    for d in docs
+                ],
+                file_count=int(r["file_count"]),
+                message_count=int(r["message_count"]),
+            )
+        )
+    return result
+
+
+@router.get("/{session_id}", response_model=SessionHistoryResponse, summary="Lấy lịch sử hội thoại của một phiên")
+async def get_session_history(session_id: str):
+    """
+    Trả về toàn bộ lịch sử hội thoại của một phiên chat.
+
+    Bao gồm:
+    - Danh sách tất cả file đã upload trong phiên
+    - Toàn bộ cặp hỏi-đáp theo thứ tự thời gian
+    """
+    # Lấy danh sách documents trong session
+    docs = await db_get_documents_by_session(session_id)
+    # Không cần session tồn tại tường minh — documents trống cũng hợp lệ
+    # nhưng nếu không có docs VÀ không có messages thì 404
+    messages = await db_get_messages(session_id)
+
+    if not docs and not messages:
+        raise HTTPException(
+            status_code=404,
+            detail=f"session_id '{session_id}' không tồn tại hoặc không có dữ liệu."
+        )
+
+    files = [
+        FileInfo(
+            file_id=str(d["doc_id"]),
+            file_name=d["file_name"],
+            file_type=d["file_type"],
+            uploaded_at=d.get("uploaded_at"),
+        )
+        for d in docs
     ]
 
+    history = [
+        ChatMessage(
+            question=m["question"],
+            answer=m["answer"],
+            created_at=m.get("created_at"),
+            file_ids=m.get("file_ids") or [],
+            search_mode=m.get("search_mode") or "unknown",
+            citations=m.get("citations") or [],
+        )
+        for m in messages
+    ]
 
-@router.get("/{file_id}", response_model=HistoryResponse)
-async def get_history(file_id: str):
-    """Trả về toàn bộ lịch sử hội thoại của một file."""
-    sessions = await db_get_all_sessions()
-    session = next((s for s in sessions if str(s["file_id"]) == file_id), None)
-    if not session:
-        return {"file_id": file_id, "filename": "", "history": []}
-
-    messages = await db_get_messages(file_id)
-    return {
-        "file_id": file_id,
-        "filename": session["filename"],
-        "history": messages,
-    }
+    return SessionHistoryResponse(
+        session_id=session_id,
+        files=files,
+        history=history,
+    )
 
 
 @router.delete("", summary="Xóa toàn bộ lịch sử chat")
 async def clear_all_history():
-    """Xóa toàn bộ lịch sử hội thoại của tất cả các file."""
+    """Xóa toàn bộ phiên chat, documents và messages liên quan (CASCADE)."""
     await db_delete_all_sessions()
     return {"message": "Đã xóa toàn bộ lịch sử chat"}
 
 
-@router.delete("/{file_id}", summary="Xóa lịch sử chat của một file")
-async def clear_history(file_id: str):
-    """Xóa lịch sử hội thoại của một file cụ thể."""
-    deleted = await db_delete_session(file_id)
+@router.delete("/{session_id}", summary="Xóa một phiên chat cụ thể")
+async def clear_session_history(session_id: str):
+    """
+    Xóa một phiên chat theo `session_id`.
+    Do ràng buộc CASCADE trong DB, toàn bộ documents và messages của phiên này cũng bị xóa.
+    """
+    deleted = await db_delete_session(session_id)
     if not deleted:
-        return {"error": "file_id không tồn tại"}
-    return {"message": f"Đã xóa lịch sử chat của file {file_id}"}
+        raise HTTPException(
+            status_code=404,
+            detail=f"session_id '{session_id}' không tồn tại."
+        )
+    return {"message": f"Đã xóa phiên chat {session_id}"}
