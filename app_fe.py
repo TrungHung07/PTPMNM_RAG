@@ -291,41 +291,92 @@ if "rerank_enabled" not in st.session_state:
     st.session_state.rerank_enabled = True
 if "rerank_threshold" not in st.session_state:
     st.session_state.rerank_threshold = 0.1
+if "rag_mode" not in st.session_state:
+    st.session_state.rag_mode = "standard"  # "standard" | "graph"
+if "compare_rag_mode" not in st.session_state:
+    st.session_state.compare_rag_mode = False  # So sánh Standard RAG vs Graph RAG
 
 @st.dialog("Cấu hình hệ thống")
 def settings_dialog():
     st.markdown("##### Cấu hình Chunking")
     st.session_state.chunk_size = st.slider("Chunk Size", 500, 2000, st.session_state.chunk_size, 100)
     st.session_state.chunk_overlap = st.slider("Overlap", 0, 500, st.session_state.chunk_overlap, 50)
-    
+
     st.divider()
-    
-    st.markdown("##### Chế độ tìm kiếm")
-    st.session_state.eval_mode = st.toggle("Chế độ so sánh (Hybrid vs Vector)", value=st.session_state.eval_mode)
-    
-    if not st.session_state.eval_mode:
-        st.session_state.search_mode = st.radio(
-            "Chiến lược retrieval",
-            options=["hybrid", "vector"],
-            index=0 if st.session_state.search_mode == "hybrid" else 1,
-            horizontal=True
+
+    # ── Chọn RAG engine TRƯỚC — ảnh hưởng đến các section bên dưới ──────────
+    st.markdown("##### Chế độ RAG")
+    _rag_labels = ["Standard RAG (Vector/Hybrid)", "Graph RAG (Knowledge Graph)"]
+    _rag_values = ["standard", "graph"]
+    _rag_idx = _rag_values.index(st.session_state.rag_mode) if st.session_state.rag_mode in _rag_values else 0
+    _selected_rag = st.radio(
+        "Chọn engine RAG",
+        options=_rag_labels,
+        index=_rag_idx,
+        help="Standard: dùng FAISS vector search. Graph: dùng knowledge graph (chậm hơn, cần upload lại nếu vừa restart server).",
+    )
+    st.session_state.rag_mode = _rag_values[_rag_labels.index(_selected_rag)]
+
+    st.divider()
+
+    if st.session_state.rag_mode == "graph":
+        # ── Graph RAG: ẩn tất cả tuỳ chọn riêng của Standard RAG ────────────
+        st.info(
+            "🔗 **Graph RAG đang bật** — Chế độ tìm kiếm (Vector/Hybrid), "
+            "So sánh và Reranking không áp dụng với engine này.",
+            icon=None,
         )
-        if st.session_state.search_mode == "hybrid":
-            st.session_state.bm25_weight = st.slider(
-                "Trọng số BM25", 0.0, 1.0, st.session_state.bm25_weight, 0.1,
-                help="Tăng để ưu tiên từ khóa chính xác, giảm để ưu tiên ngữ nghĩa."
+        # Reset các mode không dùng đến
+        st.session_state.eval_mode = False
+        st.session_state.compare_rag_mode = False
+    else:
+        # ── Standard RAG: hiện đầy đủ tuỳ chọn ─────────────────────────────
+        st.markdown("##### Chế độ tìm kiếm")
+
+        # Toggle 1: So sánh Hybrid vs Vector (Standard chỉ)
+        _eval_disabled = st.session_state.compare_rag_mode
+        st.session_state.eval_mode = st.toggle(
+            "Chế độ so sánh (Hybrid vs Vector)",
+            value=st.session_state.eval_mode,
+            disabled=_eval_disabled,
+            help="Không khả dụng khi đang bật So sánh RAG vs Graph RAG." if _eval_disabled else None,
+        )
+
+        # Toggle 2: So sánh Standard RAG vs Graph RAG (MỚI)
+        _compare_disabled = st.session_state.eval_mode
+        st.session_state.compare_rag_mode = st.toggle(
+            "So sánh Standard RAG vs Graph RAG 🔀",
+            value=st.session_state.compare_rag_mode,
+            disabled=_compare_disabled,
+            help="Chạy cả 2 engine song song và hiển thị kết quả 2 cột. "
+                 "Không khả dụng khi đang bật So sánh Hybrid vs Vector.",
+        )
+
+        if not st.session_state.eval_mode and not st.session_state.compare_rag_mode:
+            st.session_state.search_mode = st.radio(
+                "Chiến lược retrieval",
+                options=["hybrid", "vector"],
+                index=0 if st.session_state.search_mode == "hybrid" else 1,
+                horizontal=True,
             )
-            
-    st.divider()
-    st.markdown("##### Tinh chỉnh độ chính xác (Reranking)")
-    st.session_state.rerank_enabled = st.toggle("Bật Reranking (Cross-Encoder)", value=st.session_state.rerank_enabled)
-    if st.session_state.rerank_enabled:
-        st.session_state.rerank_threshold = st.slider(
-            "Độ khắt khe của nguồn trích dẫn", 0.0, 1.0, st.session_state.rerank_threshold, 0.05,
-            help="Model PhoRanker dùng thang điểm 0-1. Tăng lên 0.2-0.5 để lọc bỏ hoàn toàn các đoạn không liên quan."
+            if st.session_state.search_mode == "hybrid":
+                st.session_state.bm25_weight = st.slider(
+                    "Trọng số BM25", 0.0, 1.0, st.session_state.bm25_weight, 0.1,
+                    help="Tăng để ưu tiên từ khóa chính xác, giảm để ưu tiên ngữ nghĩa.",
+                )
+
+        st.divider()
+        st.markdown("##### Tinh chỉnh độ chính xác (Reranking)")
+        st.session_state.rerank_enabled = st.toggle(
+            "Bật Reranking (Cross-Encoder)",
+            value=st.session_state.rerank_enabled,
         )
-            
-    
+        if st.session_state.rerank_enabled:
+            st.session_state.rerank_threshold = st.slider(
+                "Độ khắt khe của nguồn trích dẫn", 0.0, 1.0, st.session_state.rerank_threshold, 0.05,
+                help="Model PhoRanker dùng thang điểm 0-1. Tăng lên 0.2-0.5 để lọc bỏ hoàn toàn các đoạn không liên quan.",
+            )
+
     if st.button("Đóng", type="primary", use_container_width=True):
         st.rerun()
 
@@ -360,7 +411,7 @@ class API:
         return resp.json() if resp.status_code == 200 else None
 
     @staticmethod
-    def ask(qid, sid, fids, mode, weight, r_enabled, r_threshold):
+    def ask(qid, sid, fids, mode, weight, r_enabled, r_threshold, rag_mode="standard"):
         payload = {
             "session_id": sid,
             "file_ids": fids,
@@ -368,7 +419,8 @@ class API:
             "search_mode": mode,
             "bm25_weight": weight,
             "rerank_enabled": r_enabled,
-            "rerank_threshold": r_threshold
+            "rerank_threshold": r_threshold,
+            "rag_mode": rag_mode,
         }
         resp = requests.post(f"{API_BASE_URL}/ask", json=payload)
         return resp.json() if resp.status_code == 200 else None
@@ -382,6 +434,22 @@ class API:
             "bm25_weight": weight
         }
         resp = requests.post(f"{API_BASE_URL}/compare", json=payload)
+        return resp.json() if resp.status_code == 200 else None
+
+    @staticmethod
+    def compare_rag(qid, sid, fids, weight, r_enabled, r_threshold):
+        """Gọi /compare-rag: chạy Standard RAG vs Graph RAG song song."""
+        payload = {
+            "session_id": sid,
+            "file_ids": fids,
+            "question": qid,
+            "bm25_weight": weight,
+            "rerank_enabled": r_enabled,
+            "rerank_threshold": r_threshold,
+            "search_mode": "hybrid",   # Standard RAG dùng hybrid
+            "rag_mode": "standard",    # field bắt buộc, backend tự rẽ nhánh
+        }
+        resp = requests.post(f"{API_BASE_URL}/compare-rag", json=payload)
         return resp.json() if resp.status_code == 200 else None
 
     @staticmethod
@@ -658,6 +726,33 @@ for msg in st.session_state.messages:
                 </div>""", unsafe_allow_html=True)
                 with st.expander(f"📚 Chi tiết nguồn Hybrid ({cit_count_h})"):
                     render_citations(res_h["citations"], query=msg["compare_data"].get("question", ""))
+        elif "compare_rag_data" in msg:
+            # ── So sánh Standard RAG vs Graph RAG ──────────────────────────
+            res_std = msg["compare_rag_data"]["standard"]
+            res_grp = msg["compare_rag_data"]["graph"]
+            c1, c2 = st.columns(2)
+            with c1:
+                cit_count_std = len(res_std.get("citations", []))
+                st.markdown(f"""<div class="comp-card">
+                    <div class="comp-header hybrid-header">🔍 Standard RAG (Hybrid)</div>
+                    <div class="comp-content">
+                        {res_std["answer"]}
+                        <div style="margin-top: 15px;"></div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                with st.expander(f"📚 Nguồn Standard RAG ({cit_count_std})"):
+                    render_citations(res_std["citations"], query=msg["compare_rag_data"].get("question", ""))
+            with c2:
+                cit_count_grp = len(res_grp.get("citations", []))
+                st.markdown(f"""<div class="comp-card">
+                    <div class="comp-header vector-header">🔗 Graph RAG</div>
+                    <div class="comp-content">
+                        {res_grp["answer"]}
+                        <div style="margin-top: 15px;"></div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                with st.expander(f"📚 Nguồn Graph RAG ({cit_count_grp})"):
+                    render_citations(res_grp["citations"], query=msg["compare_rag_data"].get("question", ""))
         else:
             st.markdown(msg["content"])
             if "citations" in msg and msg["citations"]:
@@ -710,6 +805,31 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
                             }
                         })
                         st.rerun()
+            elif st.session_state.compare_rag_mode:
+                with st.spinner("⚡ Đang chạy Standard RAG & Graph RAG song song..."):
+                    res = API.compare_rag(
+                        prompt,
+                        st.session_state.session_id,
+                        fids,
+                        st.session_state.bm25_weight,
+                        st.session_state.rerank_enabled,
+                        st.session_state.rerank_threshold,
+                    )
+                    if res:
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "compare_rag_data": {
+                                "question": res["question"],
+                                "standard": res["standard_result"],
+                                "graph": res["graph_result"],
+                            }
+                        })
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Lỗi khi chạy So sánh RAG. "
+                            "Đảm bảo tài liệu đã được upload sau khi bật Graph RAG."
+                        )
             else:
                 with st.spinner("Đang suy nghĩ..."):
                     res = API.ask(
@@ -719,7 +839,8 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
                         st.session_state.search_mode, 
                         st.session_state.bm25_weight,
                         st.session_state.rerank_enabled,
-                        st.session_state.rerank_threshold
+                        st.session_state.rerank_threshold,
+                        st.session_state.rag_mode,
                     )
                     if res:
                         st.session_state.messages.append({
