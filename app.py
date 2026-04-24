@@ -23,7 +23,9 @@ except Exception:
     # Nếu không có python-dotenv hoặc không cần .env, bỏ qua
     pass
 
+import asyncio
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
@@ -40,11 +42,15 @@ from src.rag.pipeline import (
     ask_question,
     compare_search_modes,
     merge_rag_indices,
+    run_rag,
 )
+from src.graph_rag import build_graph_index, merge_graph_indices, run_graph_rag
+from src.graph_rag.types import GraphRAGIndex as GraphRAGIndexType
+from src.rag.llm import get_llm
 from src.history.router import router as history_router
 from src.history.router import append_message, get_recent_messages
 from src.database import get_pool, close_pool, db_insert_session, db_insert_document, db_get_documents_by_session
-from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse
+from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse, CompareRAGResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -89,9 +95,13 @@ app = FastAPI(
 )
 app.include_router(history_router)
 
-# ── In-memory store: session_id → { file_id → RAGIndex } ───────────────────
+# ── In-memory store: session_id → { file_id → RAGIndex } ────────────────────────
 # Lưu ý: dữ liệu mất khi restart server. Cần persistent storage cho production.
 INDEX_DB: dict[str, dict[str, RAGIndex]] = defaultdict(dict)
+
+# ── In-memory store cho Graph RAG: session_id → { file_id → GraphRAGIndex } ──
+# Song song với INDEX_DB. Được rebuild cùng lúc với Standard RAG.
+GRAPH_DB: dict[str, dict[str, GraphRAGIndexType]] = defaultdict(dict)
 
 
 def _merged_index_for_files(
@@ -108,6 +118,29 @@ def _merged_index_for_files(
         indices.append(by_file[fid])
     try:
         return merge_rag_indices(indices), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _merged_graph_for_files(
+    session_id: str, file_ids: list[str]
+) -> tuple[GraphRAGIndexType | None, str | None]:
+    """
+    Trả về (GraphRAGIndex đã gộp, None) hoặc (None, message lỗi).
+    Dung sai: nếu session chưa có trong GRAPH_DB (do restart trước khi có Graph RAG)
+    thì trả lỗi rõ để user upload lại.
+    """
+    by_file = GRAPH_DB.get(session_id, {})
+    indices: list[GraphRAGIndexType] = []
+    for fid in file_ids:
+        if fid not in by_file:
+            return None, (
+                f"Graph index chưa có cho file {fid}. "
+                f"Vui lòng upload lại để build Graph RAG index."
+            )
+        indices.append(by_file[fid])
+    try:
+        return merge_graph_indices(indices), None
     except ValueError as exc:
         return None, str(exc)
 
@@ -169,6 +202,12 @@ async def _restore_session_from_disk(session_id: str) -> list[str]:
             documents = load_documents(file_path)
             index     = build_index(documents)
             INDEX_DB[session_id][file_id] = index
+            # Rebuild Graph RAG index song song
+            try:
+                graph_index = build_graph_index(index.chunks, llm=get_llm())
+                GRAPH_DB[session_id][file_id] = graph_index
+            except Exception as g_exc:
+                print(f"⚠️ Graph RAG restore lỗi cho {file_name}: {g_exc}")
         except Exception as exc:
             missing.append(f"{file_name} ({exc})")
 
@@ -217,10 +256,13 @@ async def upload(
         documents = load_documents(file_path)
         index = build_index(documents, chunk_size=chunk_size, overlap=chunk_overlap)
 
-        # print("Đây là chunk", index.chunks)
-        # print("Đây là vector", index.vectorstore)
+        # Build Graph RAG index song song (fail-safe: lỗi không dừng upload)
+        try:
+            graph_index = build_graph_index(index.chunks, llm=get_llm())
+            GRAPH_DB[session_id][file_id] = graph_index
+        except Exception as exc:
+            print(f"⚠️ Graph RAG index lỗi cho {file.filename}: {exc}")
 
-        
         suffix = file_path.suffix.lower().lstrip(".") or "unknown"
         await db_insert_document(
             file_id,
@@ -288,6 +330,41 @@ async def ask(req: AskRequest):
             )
         # Restore thành công — tiếp tục bình thường
 
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
+
+    # ── Rẽ nhánh theo rag_mode ───────────────────────────────────────────────
+    if getattr(req, "rag_mode", "standard") == "graph":
+        # ── Graph RAG path ───────────────────────────────────────────────────
+        graph_index, g_err = _merged_graph_for_files(req.session_id, req.file_ids)
+        if g_err:
+            return AskResponse(
+                question=req.question,
+                answer=f"Lỗi Graph RAG: {g_err}",
+                citations=[],
+                search_mode="graph",
+            )
+        result = run_graph_rag(
+            graph_index=graph_index,
+            question=req.question,
+            chat_history=chat_history,
+            llm=get_llm(),
+        )
+        await append_message(
+            req.session_id,
+            req.question,
+            result.answer,
+            req.file_ids,
+            search_mode="graph",
+            citations=[c.model_dump() for c in result.citations],
+        )
+        return AskResponse(
+            question=req.question,
+            answer=result.answer,
+            citations=result.citations,
+            search_mode="graph",
+        )
+
+    # ── Standard RAG path (default) ──────────────────────────────────────────
     index, err = _merged_index_for_files(req.session_id, req.file_ids)
     if err:
         return AskResponse(
@@ -297,7 +374,6 @@ async def ask(req: AskRequest):
             search_mode=req.search_mode,
         )
 
-    chat_history = await get_recent_messages(req.session_id, req.file_ids)
     result = ask_question(
         index=index,
         question=req.question,
@@ -316,6 +392,7 @@ async def ask(req: AskRequest):
         citations=[c.model_dump() for c in result.citations],
     )
     return result
+
 
 
 @app.post(
@@ -387,6 +464,105 @@ async def compare(req: AskRequest):
         question=req.question,
         vector_result=vector_result,
         hybrid_result=hybrid_result,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# So sánh Standard RAG vs Graph RAG (parallel ThreadPoolExecutor)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Thread pool khởi tạo 1 lần — tránh overhead tạo pool mỗi request
+_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compare_rag")
+
+
+@app.post(
+    "/compare-rag",
+    response_model=CompareRAGResponse,
+    summary="So sánh Standard RAG vs Graph RAG trên cùng câu hỏi (song song)",
+    tags=["Evaluation"],
+)
+async def compare_rag_endpoint(req: AskRequest):
+    """
+    Chạy cùng một câu hỏi trên Standard RAG (hybrid) VÀ Graph RAG đồng thời
+    bằng ThreadPoolExecutor, trả kết quả song song 2 cột.
+
+    **Parallelism:** Standard RAG retrieval (FAISS+BM25) và Graph RAG retrieval
+    (graph lookup) chạy trong 2 thread riêng. Cả 2 đều gọi LLM nên Ollama sẽ
+    queue, nhưng overhead retrieval được overlap → tiết kiệm thời gian đáng kể
+    so với sequential (đặc biệt khi graph lookup + entity extraction chậm).
+
+    **History:** Lưu 2 message riêng biệt vào DB:
+    - search_mode="compare_standard" cho Standard RAG
+    - search_mode="compare_graph" cho Graph RAG
+    """
+    # ── Restore nếu mất index do restart ─────────────────────────────────────
+    if req.session_id not in INDEX_DB:
+        missing = await _restore_session_from_disk(req.session_id)
+        if "__session_not_found__" in missing:
+            raise HTTPException(status_code=404, detail="session_id không tồn tại.")
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Không tìm thấy file trên disk: {', '.join(missing)}.",
+            )
+
+    # ── Merge index ───────────────────────────────────────────────────────────
+    std_index, std_err = _merged_index_for_files(req.session_id, req.file_ids)
+    if std_err:
+        raise HTTPException(status_code=404, detail=std_err)
+
+    grp_index, grp_err = _merged_graph_for_files(req.session_id, req.file_ids)
+    if grp_err:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Graph RAG: {grp_err}. Vui lòng upload lại tài liệu để build Graph index.",
+        )
+
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
+    llm = get_llm()
+
+    # ── Định nghĩa 2 hàm sync để chạy trong thread ───────────────────────────
+    def _run_standard() -> SearchResult:
+        return run_rag(
+            index=std_index,
+            question=req.question,
+            chat_history=chat_history,
+            search_mode="hybrid",
+            bm25_weight=req.bm25_weight,
+            rerank_enabled=req.rerank_enabled,
+            rerank_threshold=req.rerank_threshold,
+        )
+
+    def _run_graph() -> SearchResult:
+        return run_graph_rag(
+            graph_index=grp_index,
+            question=req.question,
+            chat_history=chat_history,
+            llm=llm,
+        )
+
+    # ── Submit song song, await cả 2 ─────────────────────────────────────────
+    loop = asyncio.get_event_loop()
+    std_future = loop.run_in_executor(_COMPARE_EXECUTOR, _run_standard)
+    grp_future = loop.run_in_executor(_COMPARE_EXECUTOR, _run_graph)
+    standard_result, graph_result = await asyncio.gather(std_future, grp_future)
+
+    # ── Lưu history 2 messages ────────────────────────────────────────────────
+    await append_message(
+        req.session_id, req.question, standard_result.answer, req.file_ids,
+        search_mode="compare_standard",
+        citations=[c.model_dump() for c in standard_result.citations],
+    )
+    await append_message(
+        req.session_id, req.question, graph_result.answer, req.file_ids,
+        search_mode="compare_graph",
+        citations=[c.model_dump() for c in graph_result.citations],
+    )
+
+    return CompareRAGResponse(
+        question=req.question,
+        standard_result=standard_result,
+        graph_result=graph_result,
     )
 
 
