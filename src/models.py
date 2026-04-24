@@ -104,14 +104,11 @@ class AskRequest(BaseModel):
         default=0.0,
         description="Ngưỡng relevance của reranker để giữ lại chunk"
     )
-    rerank_enabled: bool = Field(
-        default=True,
-        description="Bật/tắt reranking bằng Cross-Encoder"
+    rag_mode: Literal["standard", "graph"] = Field(
+        default="standard",
+        description="Chế độ RAG: 'standard' (vector/hybrid FAISS) hoặc 'graph' (knowledge graph)"
     )
-    rerank_threshold: float = Field(
-        default=0.0,
-        description="Ngưỡng relevance của reranker để giữ lại chunk"
-    )
+
 
     @field_validator("file_ids", mode="after")
     @classmethod
@@ -186,6 +183,21 @@ class CompareResponse(BaseModel):
     hybrid_result: SearchResult
 
 
+class CompareRAGResponse(BaseModel):
+    """
+    Response của endpoint POST /compare-rag — so sánh Standard RAG vs Graph RAG
+    trên cùng một câu hỏi, chạy song song bằng ThreadPoolExecutor.
+
+    Attributes:
+        question: Câu hỏi gốc.
+        standard_result: Kết quả từ Standard RAG (hybrid search).
+        graph_result: Kết quả từ Graph RAG (knowledge graph).
+    """
+    question: str
+    standard_result: SearchResult
+    graph_result: SearchResult
+
+
 __all__ = [
     "RAGIndex",
     "AskRequest",
@@ -193,4 +205,5 @@ __all__ = [
     "AskResponse",
     "SearchResult",
     "CompareResponse",
+    "CompareRAGResponse",
 ]
