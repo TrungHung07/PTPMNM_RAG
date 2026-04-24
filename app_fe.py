@@ -463,8 +463,17 @@ def switch_session(sid):
             for m in data["history"]:
                 file_ids = m.get("file_ids", [])
                 file_names = [fid_to_name[fid] for fid in file_ids if fid in fid_to_name]
-                st.session_state.messages.append({"role": "user", "content": m["question"], "file_names": file_names})
-                st.session_state.messages.append({"role": "assistant", "content": m["answer"]})
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": m["question"],
+                    "file_names": file_names,
+                })
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": m["answer"],
+                    "citations": m.get("citations") or [],
+                    "search_mode": m.get("search_mode") or "unknown",
+                })
             st.rerun()
 
 # Initial load
