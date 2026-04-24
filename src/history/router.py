@@ -32,7 +32,9 @@ class ChatMessage(BaseModel):
     question: str
     answer: str
     created_at: Optional[datetime] = None
-    file_ids: List[str] = []   # doc_id của các file đã dùng để trả lời lượt này
+    file_ids: List[str] = []       # doc_id của các file đã dùng để trả lời lượt này
+    search_mode: str = "unknown"   # chiến lược retrieval đã dùng
+    citations: List = []            # danh sách citation nguồn (list[dict])
 
 
 class FileInfo(BaseModel):
@@ -67,9 +69,11 @@ async def append_message(
     question: str,
     answer: str,
     file_ids: list[str],
+    search_mode: str = "unknown",
+    citations: list | None = None,
 ) -> None:
-    """Lưu một cặp hỏi-đáp vào DB kèm danh sách file đã dùng để trả lời."""
-    await db_append_message(session_id, question, answer, file_ids)
+    """Lưu một cặp hỏi-đáp vào DB kèm file_ids, search_mode và citations."""
+    await db_append_message(session_id, question, answer, file_ids, search_mode, citations)
 
 
 async def get_recent_messages(
@@ -157,6 +161,8 @@ async def get_session_history(session_id: str):
             answer=m["answer"],
             created_at=m.get("created_at"),
             file_ids=m.get("file_ids") or [],
+            search_mode=m.get("search_mode") or "unknown",
+            citations=m.get("citations") or [],
         )
         for m in messages
     ]
