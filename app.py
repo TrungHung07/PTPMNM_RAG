@@ -307,7 +307,14 @@ async def ask(req: AskRequest):
         rerank_enabled=req.rerank_enabled,
         rerank_threshold=req.rerank_threshold,
     )
-    await append_message(req.session_id, req.question, result.answer, req.file_ids)
+    await append_message(
+        req.session_id,
+        req.question,
+        result.answer,
+        req.file_ids,
+        search_mode=req.search_mode,
+        citations=[c.model_dump() for c in result.citations],
+    )
     return result
 
 
@@ -358,9 +365,23 @@ async def compare(req: AskRequest):
         bm25_weight=req.bm25_weight,
     )
     
-    # Ở mode compare, ta có thể muốn ép rerank theo config chung hoặc theo request
-    # Tuy nhiên compare thường dùng để đánh giá retriever nên ta giữ nguyên 
-    # Nếu muốn dùng rerank trong compare, cần update compare_search_modes() signature
+    # Lưu 2 messages riêng biệt: vector trước, hybrid sau
+    await append_message(
+        req.session_id,
+        req.question,
+        vector_result.answer,
+        req.file_ids,
+        search_mode="compare_vector",
+        citations=[c.model_dump() for c in vector_result.citations],
+    )
+    await append_message(
+        req.session_id,
+        req.question,
+        hybrid_result.answer,
+        req.file_ids,
+        search_mode="compare_hybrid",
+        citations=[c.model_dump() for c in hybrid_result.citations],
+    )
 
     return CompareResponse(
         question=req.question,
