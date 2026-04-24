@@ -456,10 +456,14 @@ def switch_session(sid):
             st.session_state.file_ids_map = new_map
             st.session_state.selected_files = list(new_map.keys())
             
+            # Build file_id -> file_name lookup
+            fid_to_name = {v["id"]: fname for fname, v in new_map.items()}
             # Restore messages
             st.session_state.messages = []
             for m in data["history"]:
-                st.session_state.messages.append({"role": "user", "content": m["question"]})
+                file_ids = m.get("file_ids", [])
+                file_names = [fid_to_name[fid] for fid in file_ids if fid in fid_to_name]
+                st.session_state.messages.append({"role": "user", "content": m["question"], "file_names": file_names})
                 st.session_state.messages.append({"role": "assistant", "content": m["answer"]})
             st.rerun()
 
@@ -556,7 +560,7 @@ with st.sidebar:
             # Align checkbox and filename horizontally
             col_check, col_name = st.columns([1, 9])
             with col_check:
-                checked = st.checkbox("", value=is_sel, key=f"src_{fname}", label_visibility="collapsed")
+                checked = st.checkbox(fname, value=is_sel, key=f"src_{fname}", label_visibility="collapsed")
             with col_name:
                 st.markdown(f"""
                     <div style="display: flex; align-items: center; gap: 8px; background: white; border: 1px solid #E8EAED; border-left: 3px solid #007BFF; border-radius: 8px; padding: 4px 10px; margin-top: 2px;">
@@ -603,11 +607,20 @@ with col_t2:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
+            file_tags_html = ""
+            msg_file_names = msg.get("file_names", [])
+            if msg_file_names:
+                tags = "".join(
+                    f'<span style="display:inline-flex;align-items:center;gap:4px;background:#EFF6FF;border:1px solid #BDD7FF;border-radius:20px;padding:2px 9px;font-size:0.72rem;font-weight:600;color:#0056CC;">📄 {fn}</span>'
+                    for fn in msg_file_names
+                )
+                file_tags_html = f'<div style="display:flex;justify-content:flex-end;flex-wrap:wrap;gap:4px;margin-top:6px;">{tags}</div>'
             st.markdown(f'''
-                <div style="display: flex; justify-content: flex-end; width: 100%;">
+                <div style="display: flex; flex-direction: column; align-items: flex-end; width: 100%;">
                     <div style="background-color: #F0F2F6; padding: 12px 18px; border-radius: 20px 20px 4px 20px; color: #202124; text-align: left; display: inline-block; max-width: 85%; font-size: 0.95rem; line-height: 1.5; word-wrap: break-word;">
                         {msg["content"]}
                     </div>
+                    {file_tags_html}
                 </div>
             ''', unsafe_allow_html=True)
         elif "compare_data" in msg:
@@ -654,14 +667,21 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
     elif not st.session_state.selected_files:
         st.warning("Vui lòng chọn ít nhất một tài liệu nguồn.")
     else:
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        current_file_names = list(st.session_state.selected_files)
+        st.session_state.messages.append({"role": "user", "content": prompt, "file_names": current_file_names})
         # Render the user message immediately so it's visible while AI thinks
         with st.chat_message("user"):
-             st.markdown(f'''
-                <div style="display: flex; justify-content: flex-end; width: 100%;">
+            live_tags = "".join(
+                f'<span style="display:inline-flex;align-items:center;gap:4px;background:#EFF6FF;border:1px solid #BDD7FF;border-radius:20px;padding:2px 9px;font-size:0.72rem;font-weight:600;color:#0056CC;">📄 {fn}</span>'
+                for fn in current_file_names
+            )
+            live_tags_html = f'<div style="display:flex;justify-content:flex-end;flex-wrap:wrap;gap:4px;margin-top:6px;">{live_tags}</div>' if current_file_names else ""
+            st.markdown(f'''
+                <div style="display: flex; flex-direction: column; align-items: flex-end; width: 100%;">
                     <div style="background-color: #F0F2F6; padding: 12px 18px; border-radius: 20px 20px 4px 20px; color: #202124; text-align: left; display: inline-block; max-width: 85%; font-size: 0.95rem; line-height: 1.5; word-wrap: break-word;">
                         {prompt}
                     </div>
+                    {live_tags_html}
                 </div>
             ''', unsafe_allow_html=True)
             
