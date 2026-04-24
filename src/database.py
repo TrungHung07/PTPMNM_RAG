@@ -121,36 +121,65 @@ async def db_append_message(
     question: str,
     answer: str,
     file_ids: list[str],
+    search_mode: str = "unknown",
+    citations: list[dict] | None = None,
 ) -> None:
     """
-    Lưu một cặp hỏi-đáp vào DB kèm danh sách file_ids đã dùng để trả lời.
+    Lưu một cặp hỏi-đáp vào DB kèm file_ids, search_mode và citations.
 
-    file_ids là doc_id (uuid) của các file trong request. Dùng để lọc
-    conversational history chính xác theo ngữ cảnh file ở bước read.
+    Args:
+        session_id: UUID của phiên chat.
+        question: Câu hỏi của user.
+        answer: Câu trả lời của AI.
+        file_ids: Danh sách doc_id (uuid) đã dùng để trả lời.
+        search_mode: Chiến lược retrieval: 'vector', 'hybrid',
+                     'compare_vector', 'compare_hybrid', hoặc 'unknown'.
+        citations: Danh sách citation nguồn. Mỗi phần tử là dict có
+                   keys: content (str), metadata (dict), score (float|None).
     """
-    # asyncpg nhận list Python bình thường cho uuid[] — cast từng phần tử sang uuid
+    import json
     uuid_list = [str(fid) for fid in file_ids]
+    citations_json = json.dumps(citations or [], ensure_ascii=False)
     async with get_conn() as conn:
         await conn.execute(
             """
-            INSERT INTO messages (session_id, question, answer, file_ids)
-            VALUES ($1::uuid, $2, $3, $4::uuid[])
+            INSERT INTO messages (session_id, question, answer, file_ids, search_mode, citations)
+            VALUES ($1::uuid, $2, $3, $4::uuid[], $5, $6::jsonb)
             """,
-            session_id, question, answer, uuid_list,
+            session_id, question, answer, uuid_list, search_mode, citations_json,
         )
 
 
 async def db_get_messages(session_id: str) -> list[dict]:
+    import json
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT question, answer, created_at, file_ids FROM messages WHERE session_id = $1 ORDER BY created_at ASC",
+            """
+            SELECT question, answer, created_at, file_ids, search_mode, citations
+            FROM messages
+            WHERE session_id = $1
+            ORDER BY created_at ASC
+            """,
             session_id,
         )
-        # Chuyển file_ids từ asyncpg Record sang list[str] thường
-        return [
-            {**dict(r), "file_ids": [str(fid) for fid in (r["file_ids"] or [])]}
-            for r in rows
-        ]
+        result = []
+        for r in rows:
+            row = dict(r)
+            # Normalize file_ids: asyncpg uuid[] → list[str]
+            row["file_ids"] = [str(fid) for fid in (row["file_ids"] or [])]
+            # Normalize citations: asyncpg trả về str hoặc list tùy driver version
+            raw_cit = row.get("citations")
+            if raw_cit is None:
+                row["citations"] = []
+            elif isinstance(raw_cit, str):
+                row["citations"] = json.loads(raw_cit)
+            else:
+                # asyncpg jsonb → Python object trực tiếp
+                row["citations"] = list(raw_cit) if raw_cit else []
+            # Normalize search_mode: fallback nếu NULL (row cũ trước migration)
+            row["search_mode"] = row.get("search_mode") or "unknown"
+            result.append(row)
+        return result
 
 
 async def db_get_recent_messages(
