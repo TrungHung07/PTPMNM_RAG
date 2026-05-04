@@ -43,6 +43,9 @@ _minted*/
 *.pyg
 .latexmkrc
 latexmkrc
+
+# LaTeX sources
+*.tex
 # Local app state
 .chatbox/
 
