@@ -145,6 +145,43 @@ def _merged_graph_for_files(
         return None, str(exc)
 
 
+async def _ensure_graph_indices(session_id: str, file_ids: list[str]) -> str | None:
+    """
+    Đảm bảo GRAPH_DB có index cho tất cả file_ids trong session.
+
+    - Nếu session chưa có Standard index trong memory → auto-restore Standard từ disk.
+    - Nếu file nào chưa có Graph index → build on-demand từ RAGIndex.chunks.
+
+    Returns:
+        None nếu ok, hoặc message lỗi (dạng string) để trả ra API response.
+    """
+    # 1) Ensure Standard index exists (restore nếu cần)
+    if session_id not in INDEX_DB:
+        missing = await _restore_session_from_disk(session_id, restore_graph=False)
+        if "__session_not_found__" in missing:
+            return "Session không tồn tại. Vui lòng upload tài liệu trước."
+        if missing:
+            return f"Không tìm thấy file trên disk: {', '.join(missing)}. Vui lòng upload lại."
+
+    # 2) Build Graph index on-demand cho các file thiếu
+    by_std = INDEX_DB.get(session_id, {})
+    by_graph = GRAPH_DB.get(session_id, {})
+    llm = get_llm()
+
+    for fid in file_ids:
+        if fid in by_graph:
+            continue
+        if fid not in by_std:
+            return f"file_id không thuộc session này: {fid}"
+        try:
+            graph_index = build_graph_index(by_std[fid].chunks, llm=llm)
+        except Exception as exc:
+            return f"Lỗi build Graph index cho file_id={fid}: {exc}"
+        GRAPH_DB[session_id][fid] = graph_index
+
+    return None
+
+
 # ─────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────
@@ -167,15 +204,26 @@ def load_documents(file_path: Path) -> list[Document]:
         return extract_documents_pdf(file_path)
     elif suffix == ".docx":
         return extract_documents_docx(file_path)
+    elif suffix == ".txt":
+        text = file_path.read_text(encoding="utf-8")
+        return [Document(page_content=text, metadata={"source": file_path.name})]
     raise ValueError(f"Định dạng file không hỗ trợ: {file_path.suffix}")
 
 
-async def _restore_session_from_disk(session_id: str) -> list[str]:
+async def _restore_session_from_disk(
+    session_id: str,
+    restore_graph: bool = False,
+) -> list[str]:
     """
     Tìm file gốc trên disk và rebuild FAISS index cho tất cả documents
     thuộc session_id. Cập nhật INDEX_DB nếu thành công.
 
     File trên disk được lưu theo pattern: data/{doc_id}_{file_name}
+
+    Args:
+        session_id: ID phiên cần restore.
+        restore_graph: Nếu True thì rebuild thêm Graph RAG index (chậm).
+                       Mặc định False — chỉ rebuild Standard RAG index.
 
     Returns:
         Danh sách tên file bị thiếu (không tìm thấy trên disk).
@@ -202,12 +250,12 @@ async def _restore_session_from_disk(session_id: str) -> list[str]:
             documents = load_documents(file_path)
             index     = build_index(documents)
             INDEX_DB[session_id][file_id] = index
-            # Rebuild Graph RAG index song song
-            try:
-                graph_index = build_graph_index(index.chunks, llm=get_llm())
-                GRAPH_DB[session_id][file_id] = graph_index
-            except Exception as g_exc:
-                print(f"⚠️ Graph RAG restore lỗi cho {file_name}: {g_exc}")
+            if restore_graph:
+                try:
+                    graph_index = build_graph_index(index.chunks, llm=get_llm())
+                    GRAPH_DB[session_id][file_id] = graph_index
+                except Exception as g_exc:
+                    print(f"⚠️ Graph RAG restore lỗi cho {file_name}: {g_exc}")
         except Exception as exc:
             missing.append(f"{file_name} ({exc})")
 
@@ -218,18 +266,17 @@ async def _restore_session_from_disk(session_id: str) -> list[str]:
 # Endpoints
 # ─────────────────────────────────────────────
 
-@app.post("/upload", summary="Upload tài liệu PDF/DOCX để indexing")
+@app.post("/upload", summary="Upload tài liệu PDF/DOCX để indexing (Standard RAG)")
 async def upload(
     files: List[UploadFile] = File(...),
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
 ):
     """
-    Upload file PDF hoặc DOCX, bóc tách nội dung và xây dựng RAGIndex.
+    Upload file PDF hoặc DOCX, bóc tách nội dung và xây dựng RAGIndex (Standard).
 
-    RAGIndex bao gồm:
-    - FAISS vector store (dùng cho vector/hybrid search)
-    - Danh sách chunk thuần text (dùng cho BM25 index lúc query)
+    Chỉ build FAISS vectorstore + chunk list cho Standard RAG (vector/hybrid search).
+    **Không** build Graph RAG index — dùng `/upload-graph` nếu cần Graph RAG.
 
     Args:
         files: Danh sách file cần upload.
@@ -252,16 +299,9 @@ async def upload(
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         documents = load_documents(file_path)
         index = build_index(documents, chunk_size=chunk_size, overlap=chunk_overlap)
-
-        # Build Graph RAG index song song (fail-safe: lỗi không dừng upload)
-        try:
-            graph_index = build_graph_index(index.chunks, llm=get_llm())
-            GRAPH_DB[session_id][file_id] = graph_index
-        except Exception as exc:
-            print(f"⚠️ Graph RAG index lỗi cho {file.filename}: {exc}")
 
         suffix = file_path.suffix.lower().lstrip(".") or "unknown"
         await db_insert_document(
@@ -271,7 +311,6 @@ async def upload(
             suffix,
         )
 
-        # Lưu FAISS index trong memory theo session/file
         INDEX_DB[session_id][file_id] = index
         uploaded.append(
             {
@@ -332,38 +371,6 @@ async def ask(req: AskRequest):
 
     chat_history = await get_recent_messages(req.session_id, req.file_ids)
 
-    # ── Rẽ nhánh theo rag_mode ───────────────────────────────────────────────
-    if getattr(req, "rag_mode", "standard") == "graph":
-        # ── Graph RAG path ───────────────────────────────────────────────────
-        graph_index, g_err = _merged_graph_for_files(req.session_id, req.file_ids)
-        if g_err:
-            return AskResponse(
-                question=req.question,
-                answer=f"Lỗi Graph RAG: {g_err}",
-                citations=[],
-                search_mode="graph",
-            )
-        result = run_graph_rag(
-            graph_index=graph_index,
-            question=req.question,
-            chat_history=chat_history,
-            llm=get_llm(),
-        )
-        await append_message(
-            req.session_id,
-            req.question,
-            result.answer,
-            req.file_ids,
-            search_mode="graph",
-            citations=[c.model_dump() for c in result.citations],
-        )
-        return AskResponse(
-            question=req.question,
-            answer=result.answer,
-            citations=result.citations,
-            search_mode="graph",
-        )
-
     # ── Standard RAG path (default) ──────────────────────────────────────────
     index, err = _merged_index_for_files(req.session_id, req.file_ids)
     if err:
@@ -392,6 +399,57 @@ async def ask(req: AskRequest):
         citations=[c.model_dump() for c in result.citations],
     )
     return result
+
+
+@app.post("/ask-graph", response_model=AskResponse, summary="Hỏi đáp Graph RAG (build graph on-demand)")
+async def ask_graph(req: AskRequest):
+    """
+    Graph RAG endpoint tách riêng khỏi `/ask`.
+
+    Hành vi:
+    - Đảm bảo Standard index tồn tại (auto-restore nếu server restart).
+    - Nếu Graph index chưa có cho file_ids → build on-demand từ chunks (LLM extraction).
+    - Sau đó chạy Graph RAG retrieval + LLM để trả lời.
+    """
+    err = await _ensure_graph_indices(req.session_id, req.file_ids)
+    if err:
+        return AskResponse(
+            question=req.question,
+            answer=f"Lỗi Graph RAG: {err}",
+            citations=[],
+            search_mode="graph",
+        )
+
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
+    graph_index, g_err = _merged_graph_for_files(req.session_id, req.file_ids)
+    if g_err:
+        return AskResponse(
+            question=req.question,
+            answer=f"Lỗi Graph RAG: {g_err}",
+            citations=[],
+            search_mode="graph",
+        )
+
+    result = run_graph_rag(
+        graph_index=graph_index,
+        question=req.question,
+        chat_history=chat_history,
+        llm=get_llm(),
+    )
+    await append_message(
+        req.session_id,
+        req.question,
+        result.answer,
+        req.file_ids,
+        search_mode="graph",
+        citations=[c.model_dump() for c in result.citations],
+    )
+    return AskResponse(
+        question=req.question,
+        answer=result.answer,
+        citations=result.citations,
+        search_mode="graph",
+    )
 
 
 

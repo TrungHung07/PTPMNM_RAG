@@ -402,9 +402,10 @@ class API:
 
     @staticmethod
     def upload(files, c_size, c_overlap):
+        """Standard upload — chỉ build FAISS index, không build Graph RAG."""
         files_payload = [("files", (f.name, f.getvalue(), f.type)) for f in files]
         resp = requests.post(
-            f"{API_BASE_URL}/upload", 
+            f"{API_BASE_URL}/upload",
             params={"chunk_size": c_size, "chunk_overlap": c_overlap},
             files=files_payload
         )
@@ -420,9 +421,20 @@ class API:
             "bm25_weight": weight,
             "rerank_enabled": r_enabled,
             "rerank_threshold": r_threshold,
-            "rag_mode": rag_mode,
         }
         resp = requests.post(f"{API_BASE_URL}/ask", json=payload)
+        return resp.json() if resp.status_code == 200 else None
+
+    @staticmethod
+    def ask_graph(qid, sid, fids):
+        payload = {
+            "session_id": sid,
+            "file_ids": fids,
+            "question": qid,
+            # Các field dưới đây có thể tồn tại trong AskRequest, nhưng /ask-graph không dùng
+            # nên không cần gửi để tránh nhầm lẫn.
+        }
+        resp = requests.post(f"{API_BASE_URL}/ask-graph", json=payload)
         return resp.json() if resp.status_code == 200 else None
 
     @staticmethod
@@ -615,6 +627,7 @@ with st.sidebar:
     st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
     
     u_files = st.file_uploader("Upload PDF/DOCX", type=["pdf", "docx"], accept_multiple_files=True, label_visibility="collapsed")
+
     if u_files and st.button("Phân tích", type="primary", use_container_width=True):
         with st.status("Đang xử lý tài liệu...") as status:
             res = API.upload(u_files, st.session_state.chunk_size, st.session_state.chunk_overlap)
@@ -832,16 +845,24 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
                         )
             else:
                 with st.spinner("Đang suy nghĩ..."):
-                    res = API.ask(
-                        prompt, 
-                        st.session_state.session_id, 
-                        fids, 
-                        st.session_state.search_mode, 
-                        st.session_state.bm25_weight,
-                        st.session_state.rerank_enabled,
-                        st.session_state.rerank_threshold,
-                        st.session_state.rag_mode,
-                    )
+                    if st.session_state.rag_mode == "graph":
+                        with st.spinner("🔗 Đang build Graph index (nếu cần) và trả lời..."):
+                            res = API.ask_graph(
+                                prompt,
+                                st.session_state.session_id,
+                                fids,
+                            )
+                    else:
+                        res = API.ask(
+                            prompt,
+                            st.session_state.session_id,
+                            fids,
+                            st.session_state.search_mode,
+                            st.session_state.bm25_weight,
+                            st.session_state.rerank_enabled,
+                            st.session_state.rerank_threshold,
+                            st.session_state.rag_mode,
+                        )
                     if res:
                         st.session_state.messages.append({
                             "role": "assistant",
