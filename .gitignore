@@ -25,6 +25,24 @@ coverage/
 # Logs
 *.log
 
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xmpdata
+_minted*/
+*.pyg
+.latexmkrc
+latexmkrc
 # Local app state
 .chatbox/
 
