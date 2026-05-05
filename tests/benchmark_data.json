@@ -1,18 +1,18 @@
 [
     {
-        "question": "Chạy bộ mang lại lợi ích gì cho tim mạch?",
-        "expected_answer": "Chạy bộ giúp tăng cường lưu thông máu, giảm huyết áp và cải thiện dung tích phổi."
+        "question": "\"Runner's high\" là gì và sự khác biệt giữa Endorphin và Endocannabinoids trong việc tác động lên não bộ là gì?",
+        "expected_answer": "\"Runner's high\" là cảm giác hưng phấn cực độ. Endorphin là chất dẫn truyền thần kinh giảm đau nội sinh, còn Endocannabinoids là lipid dễ dàng vượt qua hàng rào máu não hơn, giúp giảm căng thẳng và điều hòa tâm trạng."
     },
     {
-        "question": "Lợi ích tinh thần của chạy bộ là gì?",
-        "expected_answer": "Giúp tiết ra Endorphin và Dopamine (hormone hạnh phúc), giảm căng thẳng, lo âu và cải thiện giấc ngủ."
+        "question": "Nghiên cứu năm 2013 trên 75.000 vận động viên đã đưa ra kết luận gì về quan niệm \"chạy bộ gây bào mòn khớp gối\"?",
+        "expected_answer": "Chạy bộ không làm tăng nguy cơ viêm xương khớp; ngược lại, người chạy bộ thường xuyên có tỷ lệ mắc viêm khớp thấp hơn đáng kể so với nhóm không vận động."
     },
     {
-        "question": "Những nguyên tắc vàng cho người mới bắt đầu chạy bộ là gì?",
-        "expected_answer": "Lắng nghe cơ thể, kỹ thuật quan trọng hơn tốc độ (tư thế thẳng, tiếp đất giữa bàn chân), và sự kiên trì."
+        "question": "Tại sao tổng tải trọng lên sụn khớp gối khi chạy lại tương đương khi đi bộ, mặc dù lực tác động đỉnh (peak impact force) khi chạy lớn hơn nhiều?",
+        "expected_answer": "Mặc dù lực tác động đỉnh khi chạy lớn hơn, nhưng thời gian bàn chân chạm đất lại ngắn hơn đáng kể, dẫn đến tổng tải trọng cơ học tích lũy trên một quãng đường cố định là tương đương nhau."
     },
     {
-        "question": "Đối thủ lớn nhất trên đường chạy là ai?",
-        "expected_answer": "Là phiên bản lười biếng của bản thân ngày hôm qua."
+        "question": "Tại sao nên dán vật liệu phản quang vào các khớp xương (cổ tay, mắt cá chân) khi chạy đêm thay vì dán cố định trên thân người?",
+        "expected_answer": "Dán vào các vị trí khớp xương cử động liên tục để tận dụng \"chuyển động sinh học\" (bio-motion), giúp người khác dễ dàng nhận diện đó là thực thể đang vận động từ xa."
     }
 ]

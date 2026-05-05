@@ -189,12 +189,13 @@ async def _ensure_graph_indices(session_id: str, file_ids: list[str]) -> str | N
 # Internal helpers
 # ─────────────────────────────────────────────
 
-def load_documents(file_path: Path) -> list[Document]:
+def load_documents(file_path: Path, pdf_backend: str = "pdfplumber") -> list[Document]:
     """
     Bóc tách tài liệu PDF hoặc DOCX thành list Document có metadata.
 
     Args:
         file_path: Đường dẫn file đã lưu trên disk.
+        pdf_backend: Thư viện đọc PDF ('pdfplumber', 'pypdf', hoặc 'easyocr').
 
     Returns:
         List Document kèm metadata (page/paragraph/source).
@@ -204,7 +205,8 @@ def load_documents(file_path: Path) -> list[Document]:
     """
     suffix = file_path.suffix.lower()
     if suffix == ".pdf":
-        return extract_documents_pdf(file_path)
+        from src.parsers.pdf_parser import PdfBackend
+        return extract_documents_pdf(file_path, backend=pdf_backend)
     elif suffix == ".docx":
         return extract_documents_docx(file_path)
     elif suffix == ".txt":
@@ -274,6 +276,7 @@ async def upload(
     files: List[UploadFile] = File(...),
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
+    pdf_backend: str = "pdfplumber",
 ):
     """
     Upload file PDF hoặc DOCX, bóc tách nội dung và xây dựng RAGIndex (Standard).
@@ -303,7 +306,7 @@ async def upload(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        documents = load_documents(file_path)
+        documents = load_documents(file_path, pdf_backend=pdf_backend)
         index = build_index(documents, chunk_size=chunk_size, overlap=chunk_overlap)
 
         suffix = file_path.suffix.lower().lstrip(".") or "unknown"

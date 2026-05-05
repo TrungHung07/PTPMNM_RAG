@@ -13,7 +13,7 @@ def load_benchmark_data():
 
 def run_benchmark():
     # Setup
-    pdf_path = Path("chay_bo.pdf")
+    pdf_path = Path("chaybomoi.pdf")
     if not pdf_path.exists():
         print(f"Error: {pdf_path} not found.")
         return

@@ -134,14 +134,14 @@ class HybridRetriever(BaseRetriever):
         # Tính RRF score từ BM25 results
         for rank, doc in enumerate(bm25_docs):
             key = doc.page_content
-            rrf_score = self.bm25_weight * (1.0 / (rank + self.k_rrf))
+            rrf_score = 1.0 / (rank + self.k_rrf)
             scores[key] = scores.get(key, 0.0) + rrf_score
             doc_lookup[key] = doc
 
         # Tính RRF score từ vector results, cộng dồn nếu đã có
         for rank, doc in enumerate(vector_docs):
             key = doc.page_content
-            rrf_score = vector_weight * (1.0 / (rank + self.k_rrf))
+            rrf_score = 1.0 / (rank + self.k_rrf)
             scores[key] = scores.get(key, 0.0) + rrf_score
             doc_lookup[key] = doc
 

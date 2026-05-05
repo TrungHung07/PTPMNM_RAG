@@ -295,12 +295,22 @@ if "rag_mode" not in st.session_state:
     st.session_state.rag_mode = "standard"  # "standard" | "graph"
 if "compare_rag_mode" not in st.session_state:
     st.session_state.compare_rag_mode = False  # So sánh Standard RAG vs Graph RAG
+if "pdf_backend" not in st.session_state:
+    st.session_state.pdf_backend = "pdfplumber"
 
 @st.dialog("Cấu hình hệ thống")
 def settings_dialog():
     st.markdown("##### Cấu hình Chunking")
     st.session_state.chunk_size = st.slider("Chunk Size", 500, 2000, st.session_state.chunk_size, 100)
     st.session_state.chunk_overlap = st.slider("Overlap", 0, 500, st.session_state.chunk_overlap, 50)
+    
+    st.markdown("##### Parser Backend (PDF)")
+    st.session_state.pdf_backend = st.selectbox(
+        "Thư viện xử lý PDF",
+        options=["pdfplumber", "pypdf", "easyocr"],
+        index=["pdfplumber", "pypdf", "easyocr"].index(st.session_state.pdf_backend),
+        help="pdfplumber/pypdf dùng cho text gốc. easyocr dùng cho file scan (ảnh)."
+    )
 
     st.divider()
 
@@ -401,12 +411,16 @@ class API:
         return None
 
     @staticmethod
-    def upload(files, c_size, c_overlap):
+    def upload(files, c_size, c_overlap, pdf_backend="pdfplumber"):
         """Standard upload — chỉ build FAISS index, không build Graph RAG."""
         files_payload = [("files", (f.name, f.getvalue(), f.type)) for f in files]
         resp = requests.post(
             f"{API_BASE_URL}/upload",
-            params={"chunk_size": c_size, "chunk_overlap": c_overlap},
+            params={
+                "chunk_size": c_size, 
+                "chunk_overlap": c_overlap,
+                "pdf_backend": pdf_backend
+            },
             files=files_payload
         )
         return resp.json() if resp.status_code == 200 else None
@@ -644,7 +658,12 @@ with st.sidebar:
 
     if u_files and st.button("Phân tích", type="primary", use_container_width=True):
         with st.status("Đang xử lý tài liệu...") as status:
-            res = API.upload(u_files, st.session_state.chunk_size, st.session_state.chunk_overlap)
+            res = API.upload(
+                u_files, 
+                st.session_state.chunk_size, 
+                st.session_state.chunk_overlap,
+                st.session_state.pdf_backend
+            )
             if res:
                 st.session_state.session_id = res["session_id"]
                 for f in res["files"]:

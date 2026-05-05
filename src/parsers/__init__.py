@@ -9,6 +9,7 @@ from .pdf_parser import (
     extract_documents_pdf,
     extract_documents_pdfplumber,
     extract_documents_pypdf,
+    extract_documents_easyocr,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "extract_documents_pdf",
     "extract_documents_pdfplumber",
     "extract_documents_pypdf",
+    "extract_documents_easyocr",
 ]
