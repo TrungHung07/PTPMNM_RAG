@@ -28,6 +28,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import List, Optional
+import logging
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pathlib import Path
@@ -51,6 +52,8 @@ from src.history.router import router as history_router
 from src.history.router import append_message, get_recent_messages
 from src.database import get_pool, close_pool, db_insert_session, db_insert_document, db_get_documents_by_session
 from src.models import RAGIndex, AskRequest, AskResponse, CompareResponse, CompareRAGResponse
+
+_logger = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -396,6 +399,75 @@ async def ask(req: AskRequest):
         result.answer,
         req.file_ids,
         search_mode=req.search_mode,
+        citations=[c.model_dump() for c in result.citations],
+    )
+    return result
+
+
+@app.post("/ask-v2", response_model=AskResponse, summary="Hỏi đáp (v2) KHÔNG dùng rerank (logic y hệt /ask)")
+async def ask_v2(req: AskRequest):
+    """
+    Bản sao của `/ask` nhưng ép tắt reranking để benchmark.
+    """
+    # Nếu session chưa có trong memory → thử auto-restore từ disk
+    if req.session_id not in INDEX_DB:
+        missing = await _restore_session_from_disk(req.session_id)
+
+        if "__session_not_found__" in missing:
+            return AskResponse(
+                question=req.question,
+                answer="Lỗi: Session không tồn tại. Vui lòng upload tài liệu trước.",
+                citations=[],
+                search_mode=req.search_mode,
+            )
+
+        if missing:
+            # Một số file bị thiếu trên disk
+            return AskResponse(
+                question=req.question,
+                answer=(
+                    f"Lỗi: Không tìm thấy file trên disk: {', '.join(missing)}.\n"
+                    f"Vui lòng upload lại các file bị thiếu để tiếp tục."
+                ),
+                citations=[],
+                search_mode=req.search_mode,
+            )
+
+    chat_history = await get_recent_messages(req.session_id, req.file_ids)
+
+    # ── Standard RAG path (no rerank) ───────────────────────────────────────
+    index, err = _merged_index_for_files(req.session_id, req.file_ids)
+    if err:
+        return AskResponse(
+            question=req.question,
+            answer=f"Lỗi: {err}",
+            citations=[],
+            search_mode=req.search_mode,
+        )
+
+    _logger.info(
+        "ask_v2.no_rerank session_id=%s file_ids=%d search_mode=%s bm25_weight=%.3f",
+        req.session_id,
+        len(req.file_ids),
+        req.search_mode,
+        float(req.bm25_weight),
+    )
+
+    result = ask_question(
+        index=index,
+        question=req.question,
+        chat_history=chat_history,
+        search_mode=req.search_mode,
+        bm25_weight=req.bm25_weight,
+        rerank_enabled=False,
+        rerank_threshold=req.rerank_threshold,
+    )
+    await append_message(
+        req.session_id,
+        req.question,
+        result.answer,
+        req.file_ids,
+        search_mode=f"{req.search_mode}_no_rerank",
         citations=[c.model_dump() for c in result.citations],
     )
     return result

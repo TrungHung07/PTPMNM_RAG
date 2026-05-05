@@ -8,7 +8,6 @@ Hỗ trợ 2 chế độ retrieval:
 """
 from __future__ import annotations
 
-import os
 import logging
 import time
 from typing import Literal
@@ -28,6 +27,11 @@ HISTORY_WINDOW = 5
 
 # Số chunk mỗi retriever trả về trước khi fusion (EnsembleRetriever dùng giá trị này)
 RETRIEVER_TOP_K = 4
+
+DEFAULT_RETRIEVE_CANDIDATES = 40
+DEFAULT_CONTEXT_TOP_K = RETRIEVER_TOP_K
+DEFAULT_RERANK_MAX_CHARS = 2000
+DEFAULT_RERANK_DEBUG = False
 
 
 _logger = logging.getLogger("uvicorn.error")
@@ -247,25 +251,14 @@ def run_rag(
     Returns:
         SearchResult chứa answer, citations.
     """
-    # t_start = time.perf_counter()
-
     if rerank_enabled is None:
-        rerank_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
-        
-    rerank_debug = os.getenv("RERANK_DEBUG", "false").strip().lower() == "true"
-    retrieve_candidates = int(os.getenv("RETRIEVE_CANDIDATES", "10")) # Tăng số lượng candidate ban đầu để reranker có dữ liệu
-    context_top_k = int(os.getenv("RERANK_TOP_K", str(RETRIEVER_TOP_K)))
-    rerank_max_chars = int(os.getenv("RERANK_MAX_CHARS", "2000"))
+        rerank_enabled = False
 
-    if rerank_debug:
-        _logger.warning(
-            "[RAG] config: rerank_enabled=%s rerank_debug=%s retrieve_candidates=%s context_top_k=%s rerank_max_chars=%s",
-            rerank_enabled,
-            rerank_debug,
-            retrieve_candidates,
-            context_top_k,
-            rerank_max_chars,
-        )
+    rerank_debug = DEFAULT_RERANK_DEBUG
+    retrieve_candidates = DEFAULT_RETRIEVE_CANDIDATES
+    context_top_k = DEFAULT_CONTEXT_TOP_K
+    rerank_max_chars = DEFAULT_RERANK_MAX_CHARS
+
     # ── Chọn retriever phù hợp với mode ──────────────────────────────────────
     t_retrieval_start = time.perf_counter()
     if search_mode == "hybrid":
@@ -280,17 +273,7 @@ def run_rag(
 
     # ── Retrieve docs (sau đó lọc theo relevance để khớp citation ↔ câu hỏi) ──
     docs = retriever.invoke(question)
-
-    
-    retrieval_ms = (time.perf_counter() - t_retrieval_start) * 1000
-    if rerank_debug:
-        _logger.warning(
-            "[RAG] retrieval done: mode=%s candidates=%s/%s retrieval_ms=%.2f",
-            search_mode,
-            len(docs),
-            retrieve_candidates,
-            retrieval_ms,
-        )
+    # retrieval_ms = (time.perf_counter() - t_retrieval_start) * 1000
 
     # Không gọi LLM khi không có chunk đạt ngưỡng — tránh model dùng kiến thức có sẵn
     if not docs:
@@ -305,6 +288,7 @@ def run_rag(
     # ── Optional re-ranking (cross-encoder) ──────────────────────────────────
     _scores = None
     if rerank_enabled:
+        t_rerank_start = time.perf_counter()
         docs, _scores = rerank_documents(
             question,
             docs,
@@ -315,17 +299,6 @@ def run_rag(
         )
     else:
         docs = docs[: max(0, context_top_k)]
-    
-    if rerank_debug:
-        _logger.warning(
-            "[RAG] rerank: enabled=%s kept=%s/%s threshold=%s",
-            rerank_enabled,
-            len(docs),
-            context_top_k,
-            rerank_threshold,
-        )
-        if docs and _scores:
-            _logger.warning("[RAG] top relevance scores: %s", _scores[:3])
 
     # ── Build prompt và gọi LLM ───────────────────────────────────────────────
     context = "\n\n".join(doc.page_content for doc in docs)
@@ -394,19 +367,18 @@ def compare_search_modes(
     question: str,
     chat_history: list = [],
     bm25_weight: float = 0.5,
+    rerank_enabled: bool = True,
+    rerank_threshold: float = 0.0,
 ) -> tuple[SearchResult, SearchResult]:
     """
-    So sánh công bằng bằng cách đảm bảo cả 2 đều dùng chung config rerank từ Env.
+    So sánh công bằng: vector vs hybrid với cùng config rerank do caller truyền vào.
     """
-    r_enabled = os.getenv("RERANK_ENABLED", "false").strip().lower() == "true"
-    r_threshold = float(os.getenv("RERANK_THRESHOLD", "0.0"))
-
     # Chạy Vector
     v_res = run_rag(index, question, chat_history, "vector", bm25_weight, 
-                    rerank_enabled=r_enabled, rerank_threshold=r_threshold)
+                    rerank_enabled=rerank_enabled, rerank_threshold=rerank_threshold)
     # Chạy Hybrid
     h_res = run_rag(index, question, chat_history, "hybrid", bm25_weight,
-                    rerank_enabled=r_enabled, rerank_threshold=r_threshold)
+                    rerank_enabled=rerank_enabled, rerank_threshold=rerank_threshold)
     
     return v_res, h_res
 
