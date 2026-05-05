@@ -402,9 +402,10 @@ class API:
 
     @staticmethod
     def upload(files, c_size, c_overlap):
+        """Standard upload — chỉ build FAISS index, không build Graph RAG."""
         files_payload = [("files", (f.name, f.getvalue(), f.type)) for f in files]
         resp = requests.post(
-            f"{API_BASE_URL}/upload", 
+            f"{API_BASE_URL}/upload",
             params={"chunk_size": c_size, "chunk_overlap": c_overlap},
             files=files_payload
         )
@@ -420,9 +421,20 @@ class API:
             "bm25_weight": weight,
             "rerank_enabled": r_enabled,
             "rerank_threshold": r_threshold,
-            "rag_mode": rag_mode,
         }
         resp = requests.post(f"{API_BASE_URL}/ask", json=payload)
+        return resp.json() if resp.status_code == 200 else None
+
+    @staticmethod
+    def ask_graph(qid, sid, fids):
+        payload = {
+            "session_id": sid,
+            "file_ids": fids,
+            "question": qid,
+            # Các field dưới đây có thể tồn tại trong AskRequest, nhưng /ask-graph không dùng
+            # nên không cần gửi để tránh nhầm lẫn.
+        }
+        resp = requests.post(f"{API_BASE_URL}/ask-graph", json=payload)
         return resp.json() if resp.status_code == 200 else None
 
     @staticmethod
@@ -463,6 +475,20 @@ class API:
     def clear_all_history():
         try:
             resp = requests.delete(f"{API_BASE_URL}/history")
+            return resp.status_code == 200
+        except: return False
+
+    @staticmethod
+    def clear_all_vectorstore():
+        try:
+            resp = requests.delete(f"{API_BASE_URL}/vectorstore")
+            return resp.status_code == 200
+        except: return False
+
+    @staticmethod
+    def clear_file_vectorstore(session_id, file_id):
+        try:
+            resp = requests.delete(f"{API_BASE_URL}/vectorstore/{session_id}/{file_id}")
             return resp.status_code == 200
         except: return False
 
@@ -615,6 +641,7 @@ with st.sidebar:
     st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
     
     u_files = st.file_uploader("Upload PDF/DOCX", type=["pdf", "docx"], accept_multiple_files=True, label_visibility="collapsed")
+
     if u_files and st.button("Phân tích", type="primary", use_container_width=True):
         with st.status("Đang xử lý tài liệu...") as status:
             res = API.upload(u_files, st.session_state.chunk_size, st.session_state.chunk_overlap)
@@ -631,7 +658,7 @@ with st.sidebar:
     if st.session_state.file_ids_map:
         st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
         st.markdown('<span class="sd-label">Tài liệu đã chọn</span>', unsafe_allow_html=True)
-        for fname in st.session_state.file_ids_map.keys():
+        for fname in list(st.session_state.file_ids_map.keys()):
             is_sel = fname in st.session_state.selected_files
             
             # Align checkbox and filename horizontally
@@ -650,6 +677,40 @@ with st.sidebar:
                 st.session_state.selected_files.append(fname)
             elif not checked and fname in st.session_state.selected_files:
                 st.session_state.selected_files.remove(fname)
+
+        # ── Nút xóa file đã chọn khỏi vectorstore ──
+        if st.session_state.selected_files and st.session_state.session_id:
+            if st.button("🗑️ Xóa file đã chọn", use_container_width=True,
+                         help="Xóa các file đang chọn khỏi Vector Store (memory)"):
+                sid = st.session_state.session_id
+                removed = []
+                for fname in list(st.session_state.selected_files):
+                    finfo = st.session_state.file_ids_map.get(fname)
+                    if finfo:
+                        if API.clear_file_vectorstore(sid, finfo["id"]):
+                            removed.append(fname)
+                            del st.session_state.file_ids_map[fname]
+                if removed:
+                    st.session_state.selected_files = [
+                        f for f in st.session_state.selected_files if f not in removed
+                    ]
+                    st.success(f"Đã xóa: {', '.join(removed)}")
+                    st.rerun()
+                else:
+                    st.error("Không thể xóa file.")
+
+    # ── Nút Clear Vector Store ──
+    if st.session_state.session_id:
+        st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
+        if st.button("🧹 Clear Vector Store", use_container_width=True, type="secondary",
+                     help="Xóa toàn bộ tài liệu đã upload khỏi bộ nhớ (Vector Store)"):
+            if API.clear_all_vectorstore():
+                st.session_state.file_ids_map = {}
+                st.session_state.selected_files = []
+                st.success("Đã xóa toàn bộ Vector Store!")
+                st.rerun()
+            else:
+                st.error("Không thể xóa Vector Store.")
 
     st.markdown('<div class="settings-wrapper">', unsafe_allow_html=True)
     if st.button("Cấu hình hệ thống", key="sidebar_settings", use_container_width=True):
@@ -832,16 +893,24 @@ if prompt := st.chat_input("Nhập câu hỏi tại đây..."):
                         )
             else:
                 with st.spinner("Đang suy nghĩ..."):
-                    res = API.ask(
-                        prompt, 
-                        st.session_state.session_id, 
-                        fids, 
-                        st.session_state.search_mode, 
-                        st.session_state.bm25_weight,
-                        st.session_state.rerank_enabled,
-                        st.session_state.rerank_threshold,
-                        st.session_state.rag_mode,
-                    )
+                    if st.session_state.rag_mode == "graph":
+                        with st.spinner("🔗 Đang build Graph index (nếu cần) và trả lời..."):
+                            res = API.ask_graph(
+                                prompt,
+                                st.session_state.session_id,
+                                fids,
+                            )
+                    else:
+                        res = API.ask(
+                            prompt,
+                            st.session_state.session_id,
+                            fids,
+                            st.session_state.search_mode,
+                            st.session_state.bm25_weight,
+                            st.session_state.rerank_enabled,
+                            st.session_state.rerank_threshold,
+                            st.session_state.rag_mode,
+                        )
                     if res:
                         st.session_state.messages.append({
                             "role": "assistant",

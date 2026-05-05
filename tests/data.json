@@ -1,0 +1,42 @@
+[
+  {
+    "question": "Hệ thống sử dụng công nghệ gì để tối ưu tìm kiếm?",
+    "expected_answer": "Elasticsearch được sử dụng để phục vụ các truy vấn tìm kiếm và tăng tốc độ phản hồi."
+  },
+  {
+    "question": "Dữ liệu ghi được xử lý bằng hệ quản trị nào?",
+    "expected_answer": "Dữ liệu ghi được xử lý bằng cơ sở dữ liệu quan hệ như MySQL hoặc PostgreSQL."
+  },
+  {
+    "question": "Admin có quyền gì trong hệ thống?",
+    "expected_answer": "Admin có toàn quyền quản lý hệ thống, bao gồm cả cấu hình và phân quyền."
+  },
+  {
+    "question": "Hệ thống được triển khai bằng công nghệ gì?",
+    "expected_answer": "Hệ thống sử dụng Docker và triển khai trên các nền tảng cloud như Render."
+  },
+  {
+    "question": "Sau khi thanh toán thành công thì điều gì xảy ra?",
+    "expected_answer": "Sau khi thanh toán thành công, trạng thái đơn hàng sẽ được cập nhật tự động."
+  },
+  {
+    "question": "Hệ thống có sử dụng AI chatbot không?",
+    "expected_answer": "Không, hệ thống không sử dụng AI chatbot."
+  },
+  {
+    "question": "Người quản lý có thể làm gì trong hệ thống?",
+    "expected_answer": "Quản lý có quyền xem báo cáo và thống kê."
+  },
+  {
+    "question": "Hệ thống có sử dụng blockchain không?",
+    "expected_answer": "Không, hệ thống không sử dụng blockchain."
+  },
+  {
+    "question": "Tại sao hệ thống lại tách dữ liệu đọc và ghi?",
+    "expected_answer": "Để tối ưu hiệu năng và tăng tốc độ xử lý truy vấn."
+  },
+  {
+    "question": "Những vai trò nào tồn tại trong hệ thống?",
+    "expected_answer": "Có ba vai trò: Nhân viên, Quản lý và Admin."
+  }
+]
