@@ -478,6 +478,20 @@ class API:
             return resp.status_code == 200
         except: return False
 
+    @staticmethod
+    def clear_all_vectorstore():
+        try:
+            resp = requests.delete(f"{API_BASE_URL}/vectorstore")
+            return resp.status_code == 200
+        except: return False
+
+    @staticmethod
+    def clear_file_vectorstore(session_id, file_id):
+        try:
+            resp = requests.delete(f"{API_BASE_URL}/vectorstore/{session_id}/{file_id}")
+            return resp.status_code == 200
+        except: return False
+
 # --- Helper Functions ---
 def render_citations(sources: list, query: str = None):
     """Render citation with optional keyword highlighting."""
@@ -644,7 +658,7 @@ with st.sidebar:
     if st.session_state.file_ids_map:
         st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
         st.markdown('<span class="sd-label">Tài liệu đã chọn</span>', unsafe_allow_html=True)
-        for fname in st.session_state.file_ids_map.keys():
+        for fname in list(st.session_state.file_ids_map.keys()):
             is_sel = fname in st.session_state.selected_files
             
             # Align checkbox and filename horizontally
@@ -663,6 +677,40 @@ with st.sidebar:
                 st.session_state.selected_files.append(fname)
             elif not checked and fname in st.session_state.selected_files:
                 st.session_state.selected_files.remove(fname)
+
+        # ── Nút xóa file đã chọn khỏi vectorstore ──
+        if st.session_state.selected_files and st.session_state.session_id:
+            if st.button("🗑️ Xóa file đã chọn", use_container_width=True,
+                         help="Xóa các file đang chọn khỏi Vector Store (memory)"):
+                sid = st.session_state.session_id
+                removed = []
+                for fname in list(st.session_state.selected_files):
+                    finfo = st.session_state.file_ids_map.get(fname)
+                    if finfo:
+                        if API.clear_file_vectorstore(sid, finfo["id"]):
+                            removed.append(fname)
+                            del st.session_state.file_ids_map[fname]
+                if removed:
+                    st.session_state.selected_files = [
+                        f for f in st.session_state.selected_files if f not in removed
+                    ]
+                    st.success(f"Đã xóa: {', '.join(removed)}")
+                    st.rerun()
+                else:
+                    st.error("Không thể xóa file.")
+
+    # ── Nút Clear Vector Store ──
+    if st.session_state.session_id:
+        st.markdown('<hr class="sd-divider">', unsafe_allow_html=True)
+        if st.button("🧹 Clear Vector Store", use_container_width=True, type="secondary",
+                     help="Xóa toàn bộ tài liệu đã upload khỏi bộ nhớ (Vector Store)"):
+            if API.clear_all_vectorstore():
+                st.session_state.file_ids_map = {}
+                st.session_state.selected_files = []
+                st.success("Đã xóa toàn bộ Vector Store!")
+                st.rerun()
+            else:
+                st.error("Không thể xóa Vector Store.")
 
     st.markdown('<div class="settings-wrapper">', unsafe_allow_html=True)
     if st.button("Cấu hình hệ thống", key="sidebar_settings", use_container_width=True):
