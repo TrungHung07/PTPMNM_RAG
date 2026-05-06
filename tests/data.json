@@ -1,42 +1,52 @@
 [
   {
-    "question": "Hệ thống sử dụng công nghệ gì để tối ưu tìm kiếm?",
-    "expected_answer": "Elasticsearch được sử dụng để phục vụ các truy vấn tìm kiếm và tăng tốc độ phản hồi."
+    "question": "Reranking trong RAG dùng để làm gì?",
+    "expected_answer": "Để sắp xếp lại các đoạn văn theo mức độ liên quan với query nhằm chọn ra đoạn phù hợp nhất.",
+    "gold_citations": [{ "page": 1, "chunk_index": 0 }]
   },
   {
-    "question": "Dữ liệu ghi được xử lý bằng hệ quản trị nào?",
-    "expected_answer": "Dữ liệu ghi được xử lý bằng cơ sở dữ liệu quan hệ như MySQL hoặc PostgreSQL."
+    "question": "Sự khác biệt chính giữa bi-encoder và cross-encoder là gì?",
+    "expected_answer": "Bi-encoder tạo embedding riêng cho query và document, còn cross-encoder đánh giá trực tiếp cặp query-document.",
+    "gold_citations": [{ "page": 1, "chunk_index": 2 }]
   },
   {
-    "question": "Admin có quyền gì trong hệ thống?",
-    "expected_answer": "Admin có toàn quyền quản lý hệ thống, bao gồm cả cấu hình và phân quyền."
+    "question": "Ví dụ nào trong đoạn văn cho thấy vấn đề đa nghĩa của từ?",
+    "expected_answer": "Từ 'bank' có thể nghĩa là ngân hàng hoặc bờ sông.",
+    "gold_citations": [{ "page": 1, "chunk_index": 2 }]
   },
   {
-    "question": "Hệ thống được triển khai bằng công nghệ gì?",
-    "expected_answer": "Hệ thống sử dụng Docker và triển khai trên các nền tảng cloud như Render."
+    "question": "Một rủi ro khi dữ liệu có nhiều phiên bản khác nhau là gì?",
+    "expected_answer": "Hệ thống có thể chọn thông tin cũ hoặc mâu thuẫn nếu không ưu tiên dữ liệu mới hơn.",
+    "gold_citations": [{ "page": 1, "chunk_index": 1 }]
   },
   {
-    "question": "Sau khi thanh toán thành công thì điều gì xảy ra?",
-    "expected_answer": "Sau khi thanh toán thành công, trạng thái đơn hàng sẽ được cập nhật tự động."
+    "question": "Metadata có thể giúp cải thiện RAG như thế nào?",
+    "expected_answer": "Giúp ưu tiên các đoạn văn mới hơn hoặc từ nguồn đáng tin cậy.",
+    "gold_citations": [{ "page": 1, "chunk_index": 3 }]
   },
   {
-    "question": "Hệ thống có sử dụng AI chatbot không?",
-    "expected_answer": "Không, hệ thống không sử dụng AI chatbot."
+    "question": "Chunking ảnh hưởng đến RAG ra sao?",
+    "expected_answer": "Chunk quá nhỏ mất ngữ cảnh, quá lớn làm loãng embedding.",
+    "gold_citations": [{ "page": 2, "chunk_index": 0 }]
   },
   {
-    "question": "Người quản lý có thể làm gì trong hệ thống?",
-    "expected_answer": "Quản lý có quyền xem báo cáo và thống kê."
+    "question": "Tại sao rerank không phải lúc nào cũng hiệu quả?",
+    "expected_answer": "Vì embedding đôi khi đã đủ tốt và rerank chỉ làm tăng độ trễ.",
+    "gold_citations": [{ "page": 2, "chunk_index": 1 }]
   },
   {
-    "question": "Hệ thống có sử dụng blockchain không?",
-    "expected_answer": "Không, hệ thống không sử dụng blockchain."
+    "question": "Ví dụ nào liên quan đến hệ thống nhà hàng trong đoạn?",
+    "expected_answer": "Quy trình xử lý đơn hàng có thể bị tách rời khi chunking không hợp lý.",
+    "gold_citations": [{ "page": 2, "chunk_index": 0 }]
   },
   {
-    "question": "Tại sao hệ thống lại tách dữ liệu đọc và ghi?",
-    "expected_answer": "Để tối ưu hiệu năng và tăng tốc độ xử lý truy vấn."
+    "question": "Một vấn đề khi không dùng rerank là gì?",
+    "expected_answer": "Có thể chọn các đoạn văn chứa từ khóa giống nhưng không liên quan ngữ nghĩa.",
+    "gold_citations": [{ "page": 1, "chunk_index": 0 }]
   },
   {
-    "question": "Những vai trò nào tồn tại trong hệ thống?",
-    "expected_answer": "Có ba vai trò: Nhân viên, Quản lý và Admin."
+    "question": "Ngoài độ chính xác, RAG còn cần đánh giá yếu tố nào?",
+    "expected_answer": "Khả năng giải thích (explainability).",
+    "gold_citations": [{ "page": 2, "chunk_index": 1 }]
   }
 ]

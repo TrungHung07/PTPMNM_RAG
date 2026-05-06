@@ -82,18 +82,13 @@ def rerank_documents(
         (query, _truncate(d.page_content or "", max_chars)) for d in docs
     ]
 
-    if batch_size is None:
-        batch_size = int(os.getenv("RERANK_BATCH_SIZE", "16"))
-
+    batch_size = 16 if batch_size is None else batch_size
     scores: list[float] = list(reranker.predict(pairs, batch_size=batch_size))
 
     ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
     
     # Lọc bỏ các chunk có điểm thấp hơn ngưỡng (cutoff) để tránh rác citation
-    if threshold is not None:
-        cutoff = threshold
-    else:
-        cutoff = float(os.getenv("RERANK_SCORE_THRESHOLD", "0.0"))
+    cutoff = 0.0 if threshold is None else threshold
         
     ranked = [(d, s) for d, s in ranked if s >= cutoff]
 
